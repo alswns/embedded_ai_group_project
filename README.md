@@ -6,10 +6,12 @@
 
 - [주요 기능](#주요-기능)
 - [프로젝트 구조](#프로젝트-구조)
+- [필요한 것](#필요한-것)
 - [설치 방법](#설치-방법)
 - [데이터 준비](#데이터-준비)
 - [학습 방법](#학습-방법)
 - [사용 방법](#사용-방법)
+- [실행 스크립트](#실행-스크립트)
 - [Jetson Nano 설정](#jetson-nano-설정)
 - [Google Colab 사용](#google-colab-사용)
 - [설정 옵션](#설정-옵션)
@@ -22,6 +24,9 @@
 - **Mixed Precision**: FP16 학습으로 메모리 사용량 감소 및 속도 향상
 - **자동 환경 감지**: Colab, 로컬 환경 자동 감지 및 경로 설정
 - **검증 기능**: 각 epoch마다 여러 샘플로 캡션 생성 및 평가
+- **Quantization 지원**: FP32, FP16, Int8 (Static, QAT) 벤치마크
+- **Pruning 지원**: Magnitude, Structured, Global Pruning 테스트
+- **실시간 추론**: 웹캠을 통한 실시간 이미지 캡션 생성
 
 ## 📁 프로젝트 구조
 
@@ -32,8 +37,11 @@
 │   ├── captions.txt         # 캡션 파일 (CSV 형식: image,caption)
 │   └── glove.6B.300d.txt    # GloVe 임베딩 파일 (선택사항)
 ├── scripts/
-│   ├── train.py            # 학습 스크립트
-│   └── run.py              # 추론 테스트 스크립트
+│   ├── train.py                    # 모델 학습 스크립트
+│   ├── run.py                      # 실시간 추론 스크립트 (웹캠)
+│   ├── benchmark_quantization.py   # Quantization 벤치마크 (FP32, FP16, Int8)
+│   ├── qat_fine_tuning.py          # QAT Fine-tuning 전용 스크립트
+│   └── test_pruning.py             # Pruning 테스트 스크립트
 ├── src/
 │   ├── muti_modal_model/
 │   │   └── model.py        # MobileNet + GRU 디코더 모델
@@ -41,9 +49,40 @@
 │   │   └── model.py        # GRU 기반 디코더
 │   └── image_net/
 │       └── model.py        # MobileNet 인코더
-├── requirements.txt        # 패키지 의존성
-└── README.md              # 이 파일
+├── models/                  # 학습된 모델 저장 디렉토리
+├── benchmark_results/       # Quantization 벤치마크 결과
+├── pruning_results/         # Pruning 테스트 결과
+├── qat_results/             # QAT Fine-tuning 결과
+├── requirements.txt         # 패키지 의존성
+└── README.md                # 이 파일
 ```
+
+## 📦 필요한 것
+
+### 필수 요구사항
+
+- **Python**: 3.7 이상
+- **PyTorch**: 1.12.0 이상
+- **CUDA**: 11.0 이상 (GPU 사용 시, 선택사항)
+- **메모리**: 최소 4GB RAM (학습 시 8GB 이상 권장)
+
+### 필수 패키지
+
+모든 필수 패키지는 `requirements.txt`에 포함되어 있습니다:
+
+- `torch`, `torchvision`: 딥러닝 프레임워크
+- `Pillow`: 이미지 처리
+- `numpy`: 수치 계산
+- `matplotlib`: 그래프 시각화
+- `nltk`: METEOR 점수 계산
+- `psutil`: 메모리 사용량 측정
+- `gTTS`, `pygame`: 텍스트-음성 변환 (실시간 추론용)
+
+### 선택사항
+
+- **GloVe 임베딩**: 사전 학습된 워드 임베딩 (성능 향상)
+- **CUDA GPU**: 학습 속도 향상
+- **웹캠**: 실시간 추론 테스트
 
 ## 🚀 설치 방법
 
@@ -74,17 +113,20 @@ pip install -r requirements.txt
 #### PyTorch 설치
 
 **Mac (Apple Silicon):**
+
 ```bash
 pip install torch torchvision
 ```
 
 **Linux/Windows (CUDA):**
+
 ```bash
 # CUDA 11.8 예시
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 ```
 
 **CPU만 사용:**
+
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ```
@@ -107,6 +149,7 @@ assets/images/
 `assets/captions.txt` 파일을 CSV 형식으로 작성합니다.
 
 **형식 1: CSV (권장)**
+
 ```
 image,caption
 image1.jpg,A child in a pink dress is climbing up stairs
@@ -114,12 +157,14 @@ image2.jpg,A dog playing in the park
 ```
 
 **형식 2: 탭 구분**
+
 ```
 image1.jpg	A child in a pink dress is climbing up stairs
 image2.jpg	A dog playing in the park
 ```
 
 **형식 3: 순서대로 (이미지 파일명 순서와 캡션 순서가 일치)**
+
 ```
 A child in a pink dress is climbing up stairs
 A dog playing in the park
@@ -145,7 +190,7 @@ GloVe 파일이 없어도 랜덤 초기화된 임베딩으로 학습이 가능�
 ### 기본 학습
 
 ```bash
-python scripts/train.py
+python -m scripts.train
 ```
 
 ### 학습 과정
@@ -186,7 +231,61 @@ Epoch [1/10], Step [0/633], Loss: 8.6084
 
 ## 💻 사용 방법
 
-### 학습된 모델로 캡션 생성
+### 1. 실시간 추론 (웹캠)
+
+웹캠을 사용하여 실시간으로 이미지 캡션을 생성합니다.
+
+```bash
+python -m scripts.run
+```
+
+**기능:**
+
+- 웹캠에서 실시간 이미지 캡처
+- 이미지 캡션 생성
+- 텍스트-음성 변환 (TTS)
+- 추론 시간 표시
+
+### 2. Quantization 벤치마크
+
+FP32, FP16, Int8-Static, Int8-QAT 성능을 비교합니다.
+
+```bash
+python -m scripts.benchmark_quantization
+```
+
+**출력:**
+
+- `benchmark_results/quantization_benchmark_result.png`: 성능 비교 그래프
+- 추론 시간, 모델 크기, 메모리 사용량, METEOR 점수, 파라미터 개수 비교
+
+### 3. QAT Fine-tuning
+
+정적 양자화 후 QAT Fine-tuning을 적용하고 결과를 비교합니다.
+
+```bash
+python -m scripts.qat_fine_tuning
+```
+
+**출력:**
+
+- `qat_results/qat_fine_tuning_comparison.png`: QAT 전후 비교 그래프
+- 정적 양자화 vs QAT Fine-tuning 성능 비교
+
+### 4. Pruning 테스트
+
+다양한 Pruning 기법을 테스트하고 성능을 비교합니다.
+
+```bash
+python -m scripts.test_pruning
+```
+
+**출력:**
+
+- `pruning_results/pruning_comparison_comprehensive.png`: Pruning 결과 비교 그래프
+- Magnitude Pruning, Structured Pruning, Global Pruning 비교
+
+### 5. Python 코드로 직접 사용
 
 ```python
 import torch
@@ -195,7 +294,7 @@ from PIL import Image
 from torchvision import transforms
 
 # 모델 로드
-checkpoint = torch.load('lightweight_captioning_model.pth')
+checkpoint = torch.load('models/lightweight_captioning_model.pth')
 word_map = checkpoint['word_map']
 rev_word_map = checkpoint['rev_word_map']
 
@@ -207,7 +306,7 @@ model.eval()
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
                        std=[0.229, 0.224, 0.225])
 ])
 
@@ -278,7 +377,7 @@ sudo swapon /mnt/4GB.swap
 # 배치 크기 조정 (메모리에 따라)
 # scripts/train.py에서 BATCH_SIZE를 16 또는 8로 설정
 
-python3 scripts/train.py
+python3 -m scripts.train
 ```
 
 ### 7. Jetson Nano 특화 설정
@@ -331,13 +430,137 @@ from google.colab import files
 ### 4. 학습 실행
 
 ```python
-!python scripts/train.py
+!python -m scripts.train
 ```
 
 Colab 환경에서는 자동으로 다음 경로를 사용합니다:
+
 - 이미지: `/content/drive/MyDrive/assets/images/`
 - 캡션: `/content/drive/MyDrive/assets/captions.txt`
 - 모델 저장: `/content/drive/MyDrive/models/`
+
+## 🚀 실행 스크립트
+
+### 학습 관련
+
+#### 모델 학습
+
+```bash
+python -m scripts.train
+```
+
+**설정 파일**: `scripts/train.py`
+
+- 학습률, 배치 크기, epoch 수 등 조정 가능
+- Colab 환경 자동 감지
+- GloVe 임베딩 자동 로드
+
+### 추론 관련
+
+#### 실시간 추론 (웹캠)
+
+```bash
+python -m scripts.run
+```
+
+**기능:**
+
+- 웹캠에서 실시간 이미지 캡처
+- 이미지 캡션 생성 및 표시
+- 텍스트-음성 변환
+- 추론 시간 표시
+
+**종료**: `q` 키를 누르면 종료됩니다.
+
+### 벤치마크 관련
+
+#### Quantization 벤치마크
+
+```bash
+python -m scripts.benchmark_quantization
+```
+
+**비교 항목:**
+
+- FP32 (기본)
+- FP16 (Half Precision)
+- Int8-Static (정적 양자화)
+- Int8-QAT (Quantization-Aware Training)
+
+**출력:**
+
+- `benchmark_results/quantization_benchmark_result.png`
+- 추론 시간, 모델 크기, 메모리, METEOR 점수, 파라미터 개수 비교
+
+#### QAT Fine-tuning
+
+```bash
+python -m scripts.qat_fine_tuning
+```
+
+**기능:**
+
+- 정적 양자화 먼저 적용
+- QAT Fine-tuning 적용
+- 전후 성능 비교
+
+**출력:**
+
+- `qat_results/qat_fine_tuning_comparison.png`
+- QAT Fine-tuning 전후 비교 그래프
+
+#### Pruning 테스트
+
+```bash
+python -m scripts.test_pruning
+```
+
+**테스트 항목:**
+
+- Original (Baseline)
+- Magnitude Pruning (10%, 30%, 50%, 70%)
+- Structured Pruning (10%, 30%, 50%, 70%)
+- Global Pruning (50%)
+
+**출력:**
+
+- `pruning_results/pruning_comparison_comprehensive.png`
+- Pruning 결과 비교 그래프 (Sparsity, 모델 크기, 성능 등)
+
+### 스크립트 설정
+
+각 스크립트는 파일 상단에서 설정을 변경할 수 있습니다:
+
+**`scripts/train.py`:**
+
+```python
+LEARNING_RATE = 2e-4
+BATCH_SIZE = 64
+EPOCHS = 100
+USE_MIXED_PRECISION = True
+```
+
+**`scripts/benchmark_quantization.py`:**
+
+```python
+USE_QAT = True
+QAT_EPOCHS = 2
+NUM_RUNS = 50
+```
+
+**`scripts/qat_fine_tuning.py`:**
+
+```python
+QAT_EPOCHS = 3
+NUM_RUNS = 50
+```
+
+**`scripts/test_pruning.py`:**
+
+```python
+PRUNING_RATES = [0.1, 0.3, 0.5, 0.7]
+NUM_RUNS = 50
+```
 
 ## ⚙️ 설정 옵션
 
@@ -364,12 +587,12 @@ VAL_NUM_SAMPLES = 5        # 검증 샘플 수
 
 ### GPU 환경별 예상 성능
 
-| 환경 | 배치 크기 | 1 Epoch 시간 | 10 Epoch 시간 |
-|------|----------|-------------|--------------|
-| Mac MPS (M1/M2) | 64 | ~5-10분 | ~50-100분 |
-| Colab T4 GPU | 128 | ~2-4분 | ~20-40분 |
-| Colab V100 GPU | 256 | ~1-2분 | ~10-20분 |
-| Jetson Nano | 8 | ~30-60분 | ~5-10시간 |
+| 환경            | 배치 크기 | 1 Epoch 시간 | 10 Epoch 시간 |
+| --------------- | --------- | ------------ | ------------- |
+| Mac MPS (M1/M2) | 64        | ~5-10분      | ~50-100분     |
+| Colab T4 GPU    | 128       | ~2-4분       | ~20-40분      |
+| Colab V100 GPU  | 256       | ~1-2분       | ~10-20분      |
+| Jetson Nano     | 8         | ~30-60분     | ~5-10시간     |
 
 ### 최적화 팁
 
@@ -413,4 +636,3 @@ USE_MIXED_PRECISION = False
 ## 📧 문의
 
 문제가 발생하거나 질문이 있으시면 이슈를 등록해주세요.
-

@@ -88,7 +88,6 @@ else:
 EMBED_DIM = 300  # GloVe 6B.300d 사용
 USE_PRETRAINED_EMBEDDING = True  # 사전 학습된 임베딩 사용 여부
 # GloVe 파일 경로 (assets 하위에 위치)
-# 다운로드: wget http://nlp.stanford.edu/data/glove.6B.zip && unzip glove.6B.zip
 # 파일을 assets/glove.6B.300d.txt 위치에 저장
 GLOVE_PATH = os.path.join(ASSETS_DIR, "glove.6B.300d.txt")
 

@@ -5,6 +5,7 @@ matplotlib>=3.3.0
 gtts>=2.2.0
 pygame>=2.0.0
 nltk>=3.8  # METEOR 점수 계산용
+psutil>=5.8.0  # 메모리 사용량 측정용
 
 # Jetson Nano 전용 (Jetson에서만 필요)
 # jetson-inference는 apt-get으로 설치: sudo apt-get install jetson-inference
