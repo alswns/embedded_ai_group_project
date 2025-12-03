@@ -11,6 +11,27 @@ import numpy as np
 from collections import Counter, defaultdict
 from src.muti_modal_model.model import MobileNetCaptioningModel
 
+# METEOR 점수 계산을 위한 nltk
+try:
+    from nltk.translate.meteor_score import meteor_score
+    from nltk.tokenize import word_tokenize
+    import nltk
+    # 필요한 데이터 다운로드
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt', quiet=True)
+    try:
+        nltk.data.find('wordnet')
+    except LookupError:
+        nltk.download('wordnet', quiet=True)
+    METEOR_AVAILABLE = True
+except ImportError:
+    print("⚠️ nltk가 설치되지 않았습니다. METEOR 점수를 계산할 수 없습니다.")
+    print("   설치: pip install nltk")
+    METEOR_AVAILABLE = False
+    meteor_score = None
+
 # --- [0] 설정 (Configuration) ---
 # 디바이스 선택: CUDA > MPS > CPU
 if torch.cuda.is_available():
@@ -56,9 +77,12 @@ else:
     # 로컬 환경
     IMAGES_DIR = "assets/images"
     CAPTIONS_FILE = "assets/captions.txt"
-    MODEL_SAVE_DIR = "."
+    MODEL_SAVE_DIR = "models"  # models 폴더에 저장
     ASSETS_DIR = "assets"
     print(f"🟢 로컬 환경")
+    
+    # 모델 저장 디렉토리 생성
+    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
 
 # 사전 학습된 임베딩 설정
 EMBED_DIM = 300  # GloVe 6B.300d 사용
@@ -349,22 +373,18 @@ def train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scal
         
         if i % 10 == 0:
             print(f"Epoch [{epoch+1}/{EPOCHS}], Step [{i}/{len(dataloader)}], Loss: {loss.item():.4f}")
-            
     return total_loss / len(dataloader)
 
 # --- [3] 여러 샘플로 캡션 생성 및 검증 출력 ---
 def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_samples=5, start_idx=0):
-    """여러 샘플 이미지로 캡션을 생성하고 검증 결과를 출력"""
+    """여러 샘플 이미지로 캡션을 생성하고 METEOR 점수로 검증"""
     model.eval()
     
     results = []
-    correct_matches = 0
-    total_words_original = 0
-    total_words_generated = 0
-    matched_words = 0
+    meteor_scores = []
     
     print(f"\n{'='*70}")
-    print(f"🔍 검증: {num_samples}개 샘플로 캡션 생성 및 평가")
+    print(f"🔍 검증: {num_samples}개 샘플로 캡션 생성 및 METEOR 평가")
     print(f"{'='*70}")
     
     with torch.no_grad():
@@ -387,27 +407,34 @@ def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_sample
                 # 토큰 제거하고 문장으로 변환
                 generated_caption = ' '.join([w for w in generated_words if w not in ['<start>', '<end>', '<pad>', '<unk>']])
                 
-                # 단어 일치율 계산
-                original_words = set(original_caption.lower().split())
-                generated_words_set = set(generated_caption.lower().split())
+                # METEOR 점수 계산
+                meteor = 0.0
+                if METEOR_AVAILABLE and meteor_score:
+                    try:
+                        # METEOR는 reference를 리스트로 받음 (여러 참조 가능)
+                        reference = [original_caption.lower().split()]
+                        hypothesis = generated_caption.lower().split()
+                        meteor = meteor_score(reference, hypothesis)
+                    except Exception as e:
+                        # METEOR 계산 실패 시 단어 일치율로 대체
+                        original_words = set(original_caption.lower().split())
+                        generated_words_set = set(generated_caption.lower().split())
+                        common_words = original_words & generated_words_set
+                        meteor = len(common_words) / len(original_words) if len(original_words) > 0 else 0.0
+                else:
+                    # nltk가 없으면 단어 일치율로 대체
+                    original_words = set(original_caption.lower().split())
+                    generated_words_set = set(generated_caption.lower().split())
+                    common_words = original_words & generated_words_set
+                    meteor = len(common_words) / len(original_words) if len(original_words) > 0 else 0.0
                 
-                # 공통 단어 계산
-                common_words = original_words & generated_words_set
-                word_match_ratio = len(common_words) / len(original_words) if len(original_words) > 0 else 0.0
-                
-                total_words_original += len(original_words)
-                total_words_generated += len(generated_words_set)
-                matched_words += len(common_words)
-                
-                if word_match_ratio > 0.3:  # 30% 이상 일치하면 좋은 결과로 간주
-                    correct_matches += 1
+                meteor_scores.append(meteor)
                 
                 results.append({
                     'img_name': img_name,
                     'original': original_caption,
                     'generated': generated_caption,
-                    'match_ratio': word_match_ratio,
-                    'common_words': len(common_words)
+                    'meteor': meteor
                 })
                 
                 # 각 샘플 출력
@@ -415,37 +442,41 @@ def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_sample
                 print(f"  📸 이미지: {img_name}")
                 print(f"  📝 원본: {original_caption}")
                 print(f"  🤖 생성: {generated_caption}")
-                print(f"  📊 일치율: {word_match_ratio*100:.1f}% ({len(common_words)}/{len(original_words)} 단어)")
+                print(f"  ⭐ METEOR: {meteor:.4f}")
                 
             except Exception as e:
                 print(f"  ⚠️ 샘플 {i+1} 생성 실패: {e}")
+                meteor_scores.append(0.0)
                 results.append({
                     'img_name': img_name,
                     'original': original_caption,
                     'generated': '생성 실패',
-                    'match_ratio': 0.0,
-                    'common_words': 0
+                    'meteor': 0.0
                 })
     
     # 전체 통계 출력
-    avg_match_ratio = sum([r['match_ratio'] for r in results]) / len(results) if results else 0.0
-    overall_word_match = matched_words / total_words_original if total_words_original > 0 else 0.0
+    avg_meteor = sum(meteor_scores) / len(meteor_scores) if meteor_scores else 0.0
+    good_results = sum([1 for score in meteor_scores if score > 0.3])  # 0.3 이상을 좋은 결과로 간주
     
     print(f"\n{'='*70}")
-    print(f"📈 검증 통계:")
-    print(f"  • 평균 단어 일치율: {avg_match_ratio*100:.1f}%")
-    print(f"  • 전체 단어 일치율: {overall_word_match*100:.1f}% ({matched_words}/{total_words_original} 단어)")
-    print(f"  • 좋은 결과 비율: {correct_matches}/{num_samples} ({correct_matches/num_samples*100:.1f}%)")
-    print(f"  • 평균 원본 단어 수: {total_words_original/num_samples:.1f}")
-    print(f"  • 평균 생성 단어 수: {total_words_generated/num_samples:.1f}")
+    print(f"📈 METEOR 검증 통계:")
+    print(f"  • 평균 METEOR 점수: {avg_meteor:.4f}")
+    print(f"  • 최고 METEOR 점수: {max(meteor_scores):.4f}")
+    print(f"  • 최저 METEOR 점수: {min(meteor_scores):.4f}")
+    print(f"  • 좋은 결과 비율: {good_results}/{num_samples} ({good_results/num_samples*100:.1f}%)")
+    print(f"  • METEOR 점수 분포:")
+    print(f"    - 0.5 이상 (우수): {sum([1 for s in meteor_scores if s >= 0.5])}개")
+    print(f"    - 0.3-0.5 (양호): {sum([1 for s in meteor_scores if 0.3 <= s < 0.5])}개")
+    print(f"    - 0.3 미만 (개선 필요): {sum([1 for s in meteor_scores if s < 0.3])}개")
     print(f"{'='*70}\n")
     
     model.train()  # 다시 학습 모드로
     
     return {
-        'avg_match_ratio': avg_match_ratio,
-        'overall_word_match': overall_word_match,
-        'good_results': correct_matches / num_samples if num_samples > 0 else 0.0
+        'avg_meteor': avg_meteor,
+        'max_meteor': max(meteor_scores) if meteor_scores else 0.0,
+        'min_meteor': min(meteor_scores) if meteor_scores else 0.0,
+        'good_results': good_results / num_samples if num_samples > 0 else 0.0
     }
 
 # --- [4] 메인 실행 코드 ---
@@ -593,8 +624,8 @@ def main():
             optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE * 0.1)
 
         # 주기적으로 모델 저장
-        if (epoch + 1) % 5 == 0 or epoch == EPOCHS - 1:
-            save_path = os.path.join(MODEL_SAVE_DIR, f"lightweight_captioning_model_{epoch+1}_epoch.pth")
+        save_path = os.path.join(MODEL_SAVE_DIR, f"lightweight_captioning_model_{epoch+1}_epoch.pth")
+        try:
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'word_map': word_map,
@@ -602,18 +633,25 @@ def main():
                 'vocab_size': vocab_size,
                 'epoch': epoch + 1
             }, save_path)
-            print(f"모델 저장: {save_path}")
+            print(f"✅ 모델 저장 완료: {save_path}")
+        except Exception as e:
+            print(f"❌ 모델 저장 실패: {e}")
+            print(f"   저장 경로: {save_path}")
     
     # 8. 최종 모델 저장
     final_save_path = os.path.join(MODEL_SAVE_DIR, "lightweight_captioning_model.pth")
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'word_map': word_map,
-        'rev_word_map': rev_word_map,
-        'vocab_size': vocab_size,
-        'epoch': EPOCHS
-    }, final_save_path)
-    print(f"최종 모델 저장 완료: {final_save_path}")
+    try:
+        torch.save({
+            'model_state_dict': model.state_dict(),
+            'word_map': word_map,
+            'rev_word_map': rev_word_map,
+            'vocab_size': vocab_size,
+            'epoch': EPOCHS
+        }, final_save_path)
+        print(f"✅ 최종 모델 저장 완료: {final_save_path}")
+    except Exception as e:
+        print(f"❌ 최종 모델 저장 실패: {e}")
+        print(f"   저장 경로: {final_save_path}")
 
 if __name__ == "__main__":
     main()
