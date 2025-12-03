@@ -44,9 +44,9 @@ else:
     device = torch.device("cpu")
     print("CPU 모드로 실행")
 
-LEARNING_RATE = 4e-4  # 학습률 (너무 크면 발산함)
+LEARNING_RATE = 2e-4  # 학습률 (너무 크면 발산함)
 BATCH_SIZE = 64 if device.type != "cpu" else 16  # GPU/MPS 사용 시 더 큰 배치
-EPOCHS = 10           # 전체 반복 횟수
+EPOCHS = 100          # 전체 반복 횟수
 MAX_CAPTION_LEN = 50  # 최대 캡션 길이
 MIN_WORD_FREQ = 2     # 단어장에 포함될 최소 빈도
 ENCODER_FINE_TUNING = True
@@ -568,6 +568,29 @@ def main():
         model.decoder.embedding.weight.requires_grad = True
         print("✅ 사전 학습된 임베딩 가중치 설정 완료")
     
+    # 체크포인트에서 모델 로드 (있는 경우)
+    checkpoint_path = os.path.join(MODEL_SAVE_DIR, "lightweight_captioning_model.pth")
+    start_epoch = 0
+    if os.path.exists(checkpoint_path):
+        print(f"📂 체크포인트 발견: {checkpoint_path}")
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=device)
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+                start_epoch = checkpoint.get('epoch', 0)
+                print(f"✅ 체크포인트에서 모델 로드 완료 (Epoch {start_epoch}부터 이어서 학습)")
+            else:
+                # 딕셔너리가 아닌 경우 (구버전 체크포인트)
+                model.load_state_dict(checkpoint)
+                print(f"✅ 체크포인트에서 모델 로드 완료")
+        except Exception as e:
+            print(f"⚠️ 체크포인트 로드 실패: {e}")
+            print("   새로 학습을 시작합니다.")
+    else:
+        print("📝 체크포인트 없음 - 새로 학습 시작")
+    
+    model.to(device)
+    
     # [핵심] 4. 인코더 얼리기 (Encoder Freezing)
     # MobileNet 부분은 학습되지 않도록 설정 (이미지넷 지식 보존)
     for param in model.encoder.parameters():
@@ -602,7 +625,8 @@ def main():
     VAL_NUM_SAMPLES = 5  # 검증에 사용할 샘플 수
     val_start_idx = 0  # 검증 시작 인덱스 (매 epoch마다 변경 가능)
     
-    for epoch in range(EPOCHS):
+    # 체크포인트에서 이어서 학습하는 경우
+    for epoch in range(start_epoch, EPOCHS):
         avg_loss = train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scaler, use_mixed_precision)
         print(f"=== Epoch {epoch+1}/{EPOCHS} 완료. 평균 Loss: {avg_loss:.4f} ===")
         
