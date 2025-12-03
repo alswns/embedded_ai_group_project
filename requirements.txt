@@ -1,0 +1,22 @@
+# 기본 패키지 (모든 환경)
+opencv-python>=4.5.0
+numpy>=1.19.0
+matplotlib>=3.3.0
+gtts>=2.2.0
+pygame>=2.0.0
+
+# Jetson Nano 전용 (Jetson에서만 필요)
+# jetson-inference는 apt-get으로 설치: sudo apt-get install jetson-inference
+
+# Mac/Windows용 딥러닝 프레임워크 (선택사항 - 하나만 설치하면 됨)
+# PyTorch (권장)
+torch>=1.9.0
+torchvision>=0.10.0
+
+# 또는 TensorFlow
+# tensorflow>=2.6.0
+# tensorflow-hub>=0.12.0  # 선택사항
+
+# 또는 ONNX Runtime
+# onnxruntime>=1.9.0  # 선택사항
+
