@@ -7,6 +7,7 @@ from PIL import Image
 import os
 import re
 import random
+import numpy as np
 from collections import Counter, defaultdict
 from src.muti_modal_model.model import MobileNetCaptioningModel
 
@@ -42,6 +43,7 @@ if IS_COLAB:
     IMAGES_DIR = os.path.join(BASE_DIR, "assets/images")
     CAPTIONS_FILE = os.path.join(BASE_DIR, "assets/captions.txt")
     MODEL_SAVE_DIR = os.path.join(BASE_DIR, "models")
+    ASSETS_DIR = os.path.join(BASE_DIR, "assets")
     
     print(f"🔵 Colab 환경 감지됨")
     print(f"   이미지 경로: {IMAGES_DIR}")
@@ -55,7 +57,16 @@ else:
     IMAGES_DIR = "assets/images"
     CAPTIONS_FILE = "assets/captions.txt"
     MODEL_SAVE_DIR = "."
+    ASSETS_DIR = "assets"
     print(f"🟢 로컬 환경")
+
+# 사전 학습된 임베딩 설정
+EMBED_DIM = 300  # GloVe 6B.300d 사용
+USE_PRETRAINED_EMBEDDING = True  # 사전 학습된 임베딩 사용 여부
+# GloVe 파일 경로 (assets 하위에 위치)
+# 다운로드: wget http://nlp.stanford.edu/data/glove.6B.zip && unzip glove.6B.zip
+# 파일을 assets/glove.6B.300d.txt 위치에 저장
+GLOVE_PATH = os.path.join(ASSETS_DIR, "glove.6B.300d.txt")
 
 # --- [1] 이미지 전처리 ---
 transform = transforms.Compose([
@@ -66,6 +77,69 @@ transform = transforms.Compose([
 ])
 
 # --- [2] 캡션 전처리 함수 ---
+def load_glove_embeddings(glove_path, embed_dim=300):
+    """GloVe 임베딩 파일 로드"""
+    print(f"GloVe 임베딩 로드 중: {glove_path}")
+    embeddings_dict = {}
+    
+    if not os.path.exists(glove_path):
+        print(f"⚠️ GloVe 파일을 찾을 수 없습니다: {glove_path}")
+        print("\n📥 GloVe 다운로드 방법:")
+        print("  방법 1 (터미널):")
+        print(f"    wget http://nlp.stanford.edu/data/glove.6B.zip")
+        print(f"    unzip glove.6B.zip")
+        print(f"    mv glove.6B.300d.txt {ASSETS_DIR}/")
+        print("  방법 2 (Colab):")
+        print(f"    !wget http://nlp.stanford.edu/data/glove.6B.zip")
+        print(f"    !unzip glove.6B.zip")
+        print(f"    !mv glove.6B.300d.txt {ASSETS_DIR}/")
+        print("  방법 3 (수동):")
+        print("    https://nlp.stanford.edu/projects/glove/ 에서 다운로드")
+        print(f"    다운로드한 glove.6B.300d.txt 파일을 {ASSETS_DIR}/ 폴더에 저장")
+        print(f"\n💡 GloVe 파일이 없으면 랜덤 초기화된 임베딩을 사용합니다.")
+        print(f"   예상 경로: {glove_path}\n")
+        return None
+    
+    try:
+        with open(glove_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                values = line.split()
+                word = values[0]
+                vector = np.asarray(values[1:], dtype='float32')
+                if len(vector) == embed_dim:
+                    embeddings_dict[word] = vector
+        
+        print(f"✅ GloVe 임베딩 로드 완료: {len(embeddings_dict)}개 단어")
+        return embeddings_dict
+    except Exception as e:
+        print(f"⚠️ GloVe 로드 실패: {e}")
+        return None
+
+def create_embedding_matrix(word_map, glove_embeddings=None, embed_dim=300):
+    """단어장에 맞는 임베딩 행렬 생성"""
+    vocab_size = len(word_map)
+    embedding_matrix = np.random.normal(scale=0.6, size=(vocab_size, embed_dim))
+    
+    if glove_embeddings is None:
+        print("⚠️ 사전 학습된 임베딩 없음 - 랜덤 초기화 사용")
+        return embedding_matrix
+    
+    # 특수 토큰은 랜덤 초기화 유지
+    found_count = 0
+    for word, idx in word_map.items():
+        if word in ['<pad>', '<start>', '<end>', '<unk>']:
+            continue  # 특수 토큰은 랜덤 초기화 유지
+        
+        if word in glove_embeddings:
+            embedding_matrix[idx] = glove_embeddings[word]
+            found_count += 1
+        elif word.lower() in glove_embeddings:
+            embedding_matrix[idx] = glove_embeddings[word.lower()]
+            found_count += 1
+    
+    print(f"✅ 임베딩 행렬 생성 완료: {found_count}/{vocab_size-4}개 단어 매칭 (특수 토큰 제외)")
+    return embedding_matrix
+
 def build_vocab(captions, min_freq=MIN_WORD_FREQ):
     """캡션 리스트로부터 단어장 생성"""
     # 모든 단어 수집
@@ -278,45 +352,101 @@ def train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scal
             
     return total_loss / len(dataloader)
 
-# --- [3] 예시 이미지로 캡션 생성 및 출력 ---
-def generate_example_caption(model, dataset, word_map, rev_word_map, example_idx=0):
-    """예시 이미지로 캡션을 생성하고 출력"""
+# --- [3] 여러 샘플로 캡션 생성 및 검증 출력 ---
+def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_samples=5, start_idx=0):
+    """여러 샘플 이미지로 캡션을 생성하고 검증 결과를 출력"""
     model.eval()
     
-    # 예시 이미지와 원본 캡션 가져오기
-    if example_idx >= len(dataset):
-        example_idx = 0
+    results = []
+    correct_matches = 0
+    total_words_original = 0
+    total_words_generated = 0
+    matched_words = 0
     
-    img_name, original_caption = dataset.image_caption_pairs[example_idx]
-    image, _ = dataset[example_idx]
+    print(f"\n{'='*70}")
+    print(f"🔍 검증: {num_samples}개 샘플로 캡션 생성 및 평가")
+    print(f"{'='*70}")
     
-    # 이미지 파일 전체 경로
-    img_path = os.path.join(dataset.images_dir, img_name)
+    with torch.no_grad():
+        for i in range(num_samples):
+            idx = (start_idx + i) % len(dataset)
+            
+            img_name, original_caption = dataset.image_caption_pairs[idx]
+            image, _ = dataset[idx]
+            
+            # 이미지 파일 전체 경로
+            img_path = os.path.join(dataset.images_dir, img_name)
+            
+            # 배치 차원 추가 [1, 3, 224, 224]
+            image = image.unsqueeze(0).to(device)
+            
+            try:
+                # 캡션 생성
+                generated_words = model.generate(image, word_map, rev_word_map, max_len=MAX_CAPTION_LEN)
+                
+                # 토큰 제거하고 문장으로 변환
+                generated_caption = ' '.join([w for w in generated_words if w not in ['<start>', '<end>', '<pad>', '<unk>']])
+                
+                # 단어 일치율 계산
+                original_words = set(original_caption.lower().split())
+                generated_words_set = set(generated_caption.lower().split())
+                
+                # 공통 단어 계산
+                common_words = original_words & generated_words_set
+                word_match_ratio = len(common_words) / len(original_words) if len(original_words) > 0 else 0.0
+                
+                total_words_original += len(original_words)
+                total_words_generated += len(generated_words_set)
+                matched_words += len(common_words)
+                
+                if word_match_ratio > 0.3:  # 30% 이상 일치하면 좋은 결과로 간주
+                    correct_matches += 1
+                
+                results.append({
+                    'img_name': img_name,
+                    'original': original_caption,
+                    'generated': generated_caption,
+                    'match_ratio': word_match_ratio,
+                    'common_words': len(common_words)
+                })
+                
+                # 각 샘플 출력
+                print(f"\n[샘플 {i+1}/{num_samples}]")
+                print(f"  📸 이미지: {img_name}")
+                print(f"  📝 원본: {original_caption}")
+                print(f"  🤖 생성: {generated_caption}")
+                print(f"  📊 일치율: {word_match_ratio*100:.1f}% ({len(common_words)}/{len(original_words)} 단어)")
+                
+            except Exception as e:
+                print(f"  ⚠️ 샘플 {i+1} 생성 실패: {e}")
+                results.append({
+                    'img_name': img_name,
+                    'original': original_caption,
+                    'generated': '생성 실패',
+                    'match_ratio': 0.0,
+                    'common_words': 0
+                })
     
-    # 배치 차원 추가 [1, 3, 224, 224]
-    image = image.unsqueeze(0).to(device)
+    # 전체 통계 출력
+    avg_match_ratio = sum([r['match_ratio'] for r in results]) / len(results) if results else 0.0
+    overall_word_match = matched_words / total_words_original if total_words_original > 0 else 0.0
     
-    # 캡션 생성
-    try:
-        with torch.no_grad():
-            generated_words = model.generate(image, word_map, rev_word_map, max_len=MAX_CAPTION_LEN)
-        
-        # 토큰 제거하고 문장으로 변환
-        generated_caption = ' '.join([w for w in generated_words if w not in ['<start>', '<end>', '<pad>', '<unk>']])
-        
-        print(f"\n{'='*60}")
-        print(f"📸 이미지 파일명: {img_name}")
-        print(f"📁 이미지 경로: {img_path}")
-        print(f"📝 원본 캡션: {original_caption}")
-        print(f"🤖 생성된 캡션: {generated_caption}")
-        print(f"{'='*60}\n")
-        
-    except Exception as e:
-        print(f"⚠️ 캡션 생성 중 오류 발생: {e}")
-        import traceback
-        traceback.print_exc()
+    print(f"\n{'='*70}")
+    print(f"📈 검증 통계:")
+    print(f"  • 평균 단어 일치율: {avg_match_ratio*100:.1f}%")
+    print(f"  • 전체 단어 일치율: {overall_word_match*100:.1f}% ({matched_words}/{total_words_original} 단어)")
+    print(f"  • 좋은 결과 비율: {correct_matches}/{num_samples} ({correct_matches/num_samples*100:.1f}%)")
+    print(f"  • 평균 원본 단어 수: {total_words_original/num_samples:.1f}")
+    print(f"  • 평균 생성 단어 수: {total_words_generated/num_samples:.1f}")
+    print(f"{'='*70}\n")
     
     model.train()  # 다시 학습 모드로
+    
+    return {
+        'avg_match_ratio': avg_match_ratio,
+        'overall_word_match': overall_word_match,
+        'good_results': correct_matches / num_samples if num_samples > 0 else 0.0
+    }
 
 # --- [4] 메인 실행 코드 ---
 def main():
@@ -354,6 +484,23 @@ def main():
     print(f"단어장 크기: {vocab_size}")
     print(f"주요 단어 예시: {list(word_map.items())[:10]}")
     
+    # 사전 학습된 임베딩 로드
+    use_pretrained = USE_PRETRAINED_EMBEDDING  # 로컬 변수로 복사
+    glove_embeddings = None
+    if use_pretrained:
+        glove_embeddings = load_glove_embeddings(GLOVE_PATH, embed_dim=EMBED_DIM)
+        if glove_embeddings is None:
+            print("⚠️ 사전 학습된 임베딩을 사용할 수 없습니다. 랜덤 초기화를 사용합니다.")
+            use_pretrained = False
+    
+    # 임베딩 행렬 생성
+    embedding_matrix = None
+    if use_pretrained and glove_embeddings:
+        embedding_matrix = create_embedding_matrix(word_map, glove_embeddings, embed_dim=EMBED_DIM)
+    else:
+        # 랜덤 초기화 사용 시에도 embed_dim은 설정값 사용
+        pass
+    
     # 2. 데이터셋 및 데이터 로더 준비
     print("데이터셋 로드 중...")
     dataset = CaptionDataset(
@@ -380,7 +527,15 @@ def main():
     
     # 3. 모델 준비 (MobileNet + Decoder)
     print("모델 초기화 중...")
-    model = MobileNetCaptioningModel(vocab_size=vocab_size).to(device)
+    model = MobileNetCaptioningModel(vocab_size=vocab_size, embed_dim=EMBED_DIM).to(device)
+    
+    # 사전 학습된 임베딩 가중치 설정
+    if use_pretrained and embedding_matrix is not None:
+        print("사전 학습된 임베딩 가중치 설정 중...")
+        model.decoder.embedding.weight.data.copy_(torch.from_numpy(embedding_matrix))
+        # 임베딩을 학습 가능하게 할지 고정할지 선택 (True: 학습, False: 고정)
+        model.decoder.embedding.weight.requires_grad = True
+        print("✅ 사전 학습된 임베딩 가중치 설정 완료")
     
     # [핵심] 4. 인코더 얼리기 (Encoder Freezing)
     # MobileNet 부분은 학습되지 않도록 설정 (이미지넷 지식 보존)
@@ -411,15 +566,21 @@ def main():
     # 8. 학습 루프
     print(f"학습 시작 (Encoder Frozen)... 총 {len(dataset)}개 샘플, {EPOCHS} 에포크")
     print(f"배치 크기: {BATCH_SIZE}, 디바이스: {device}, Mixed Precision: {use_mixed_precision}")
-    # 예시 이미지 인덱스 (고정된 이미지로 학습 진행 상황 확인)
-    example_idx = 0
+    
+    # 검증 설정
+    VAL_NUM_SAMPLES = 5  # 검증에 사용할 샘플 수
+    val_start_idx = 0  # 검증 시작 인덱스 (매 epoch마다 변경 가능)
     
     for epoch in range(EPOCHS):
         avg_loss = train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scaler, use_mixed_precision)
         print(f"=== Epoch {epoch+1}/{EPOCHS} 완료. 평균 Loss: {avg_loss:.4f} ===")
         
-        # 예시 이미지로 캡션 생성 및 출력
-        generate_example_caption(model, dataset, word_map, rev_word_map, example_idx)
+        # 여러 샘플로 검증 및 출력
+        val_results = evaluate_multiple_samples(
+            model, dataset, word_map, rev_word_map, 
+            num_samples=VAL_NUM_SAMPLES, 
+            start_idx=(val_start_idx + epoch * VAL_NUM_SAMPLES) % len(dataset)
+        )
         
         # [옵션] 특정 Epoch 이후에 인코더도 같이 학습시키고 싶다면? (Fine-tuning)
         if ENCODER_FINE_TUNING and epoch == 5:

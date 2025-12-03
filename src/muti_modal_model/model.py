@@ -5,7 +5,7 @@ from torchvision import models
 from src.gru_model.model import LightweightCaptionDecoder
 
 class MobileNetCaptioningModel(nn.Module):
-    def __init__(self, vocab_size, width_mult=1.0):
+    def __init__(self, vocab_size, width_mult=1.0, embed_dim=256):
         super(MobileNetCaptioningModel, self).__init__()
         
         # [A] 인코더 설정 (MobileNetV3 Small)
@@ -30,7 +30,7 @@ class MobileNetCaptioningModel(nn.Module):
         # [B] 디코더 설정 (Encoder 출력 채널 수를 그대로 입력으로 받음)
         self.decoder = LightweightCaptionDecoder(
             attention_dim=256,
-            embed_dim=256,
+            embed_dim=embed_dim,  # 임베딩 차원을 파라미터로 받음
             decoder_dim=512,
             vocab_size=vocab_size,
             encoder_dim=output_channels  # <--- 여기가 핵심 연결 고리!
