@@ -32,9 +32,30 @@ USE_MIXED_PRECISION = device.type in ["cuda", "mps"]  # Mixed precision (FP16) �
 NUM_WORKERS = 0 if device.type == "mps" else 4  # MPS에서는 0이 안전, CUDA에서는 멀티프로세싱
 PIN_MEMORY = device.type != "cpu"  # GPU 사용 시 메모리 고정
 
-# 이미지 및 캡션 경로
-IMAGES_DIR = "assets/images"
-CAPTIONS_FILE = "assets/captions.txt"
+# === 경로 설정 (Colab 환경 자동 감지) ===
+# Colab 환경 감지
+IS_COLAB = 'COLAB_GPU' in os.environ or 'COLAB_TPU' in os.environ
+
+if IS_COLAB:
+    # Colab Google Drive 경로
+    BASE_DIR = "/content/drive/MyDrive"
+    IMAGES_DIR = os.path.join(BASE_DIR, "assets/images")
+    CAPTIONS_FILE = os.path.join(BASE_DIR, "assets/captions.txt")
+    MODEL_SAVE_DIR = os.path.join(BASE_DIR, "models")
+    
+    print(f"🔵 Colab 환경 감지됨")
+    print(f"   이미지 경로: {IMAGES_DIR}")
+    print(f"   캡션 파일: {CAPTIONS_FILE}")
+    print(f"   모델 저장 경로: {MODEL_SAVE_DIR}")
+    
+    # 모델 저장 디렉토리 생성
+    os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+else:
+    # 로컬 환경
+    IMAGES_DIR = "assets/images"
+    CAPTIONS_FILE = "assets/captions.txt"
+    MODEL_SAVE_DIR = "."
+    print(f"🟢 로컬 환경")
 
 # --- [1] 이미지 전처리 ---
 transform = transforms.Compose([
@@ -412,7 +433,7 @@ def main():
 
         # 주기적으로 모델 저장
         if (epoch + 1) % 5 == 0 or epoch == EPOCHS - 1:
-            save_path = f"lightweight_captioning_model_{epoch+1}_epoch.pth"
+            save_path = os.path.join(MODEL_SAVE_DIR, f"lightweight_captioning_model_{epoch+1}_epoch.pth")
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'word_map': word_map,
@@ -423,7 +444,7 @@ def main():
             print(f"모델 저장: {save_path}")
     
     # 8. 최종 모델 저장
-    final_save_path = "lightweight_captioning_model.pth"
+    final_save_path = os.path.join(MODEL_SAVE_DIR, "lightweight_captioning_model.pth")
     torch.save({
         'model_state_dict': model.state_dict(),
         'word_map': word_map,
