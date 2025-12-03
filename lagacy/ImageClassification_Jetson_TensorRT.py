@@ -14,6 +14,14 @@ import platform
 import sys
 matplotlib.use('Agg')
 
+# GUR 모델 import
+try:
+    from GUR_model import LightweightCaptionDecoder
+    GUR_MODEL_AVAILABLE = True
+except ImportError:
+    GUR_MODEL_AVAILABLE = False
+    print("Warning: GUR_model.py를 찾을 수 없습니다. 캡션 생성 기능이 비활성화됩니다.")
+
 # ============================================================================
 # 환경 감지
 # ============================================================================
@@ -114,6 +122,31 @@ else:
     OUTPUT_DIR = "./performance_results"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 print(f"그래프 저장 경로: {OUTPUT_DIR}\n")
+
+# ============================================================================
+# 캡션 생성 모델 설정
+# ============================================================================
+
+# 기본 vocabulary 설정 (실제 사용 시 학습된 vocabulary 로드 필요)
+DEFAULT_VOCAB = {
+    '<start>': 0,
+    '<end>': 1,
+    '<pad>': 2,
+    '<unk>': 3,
+}
+
+# 기본 reverse vocabulary (ID -> 단어)
+DEFAULT_REV_VOCAB = {v: k for k, v in DEFAULT_VOCAB.items()}
+
+# 캡션 모델 설정
+CAPTION_MODEL_CONFIG = {
+    'attention_dim': 256,
+    'embed_dim': 256,
+    'decoder_dim': 512,
+    'vocab_size': 5000,  # 실제 vocabulary 크기에 맞게 조정 필요
+    'encoder_dim': 1024,  # GoogleNet 출력 채널 수
+    'model_path': None,  # 학습된 모델 가중치 경로 (있는 경우)
+}
 
 # ============================================================================
 # TensorRT Precision 설정 옵션
@@ -381,8 +414,11 @@ def load_pytorch_model(config):
                                std=[0.229, 0.224, 0.225])
         ])
         
+        # 특징 맵 추출을 위한 extractor 생성
+        extractor = FeatureMapExtractor()
+        
         print("완료!\n")
-        return {'model': model, 'transform': transform}, True
+        return {'model': model, 'transform': transform, 'extractor': extractor}, True
         
     except Exception as e:
         print(f"Error: PyTorch 모델 로딩 실패 - {e}")
@@ -405,9 +441,30 @@ def load_tensorflow_model(config):
             from tensorflow.keras.applications import InceptionV3
             from tensorflow.keras.applications.inception_v3 import preprocess_input
             
-            model = InceptionV3(weights='imagenet')
+            base_model = InceptionV3(weights='imagenet')
+            
+            # 특징 맵 추출을 위한 중간 레이어 모델 생성
+            # 마지막 conv 레이어 직전까지의 모델
+            feature_model = None
+            try:
+                # InceptionV3의 마지막 conv 블록 (mixed10) 출력 추출
+                layer_name = 'mixed10'
+                if hasattr(base_model, 'get_layer'):
+                    feature_layer = base_model.get_layer(layer_name)
+                    feature_model = tf.keras.Model(
+                        inputs=base_model.input,
+                        outputs=feature_layer.output
+                    )
+                    print(f"  특징 맵 추출 레이어: {layer_name}")
+            except Exception as e:
+                print(f"  Warning: 특징 맵 모델 생성 실패 - {e}")
+            
             print("완료! (Keras InceptionV3 사용)\n")
-            return {'model': model, 'preprocess': preprocess_input}, True
+            return {
+                'model': base_model, 
+                'preprocess': preprocess_input,
+                'feature_model': feature_model
+            }, True
         except Exception as e1:
             # 대체: TensorFlow Hub에서 모델 로드
             try:
@@ -415,7 +472,8 @@ def load_tensorflow_model(config):
                 model_url = "https://tfhub.dev/google/imagenet/inception_v3/classification/5"
                 model = hub.load(model_url)
                 print("완료! (TensorFlow Hub 사용)\n")
-                return {'model': model}, True
+                # Hub 모델은 특징 맵 추출이 제한적
+                return {'model': model, 'feature_model': None}, True
             except Exception as e2:
                 print(f"Error: TensorFlow Hub 모델 로딩 실패 - {e2}")
                 raise e1
@@ -487,10 +545,44 @@ def get_model_info(config, net=None):
     }
 
 # ============================================================================
+# 특징 맵 추출 유틸리티
+# ============================================================================
+
+class FeatureMapExtractor:
+    """특징 맵 추출을 위한 클래스"""
+    def __init__(self):
+        self.feature_maps = {}
+        self.hooks = []
+    
+    def register_hook(self, name, module):
+        """PyTorch forward hook 등록"""
+        def hook_fn(module, input, output):
+            # GPU에서 CPU로 이동하고 numpy로 변환
+            if isinstance(output, torch.Tensor):
+                self.feature_maps[name] = output.detach().cpu().numpy()
+            else:
+                self.feature_maps[name] = output
+        
+        hook = module.register_forward_hook(hook_fn)
+        self.hooks.append(hook)
+        return hook
+    
+    def clear_hooks(self):
+        """등록된 hook 제거"""
+        for hook in self.hooks:
+            hook.remove()
+        self.hooks = []
+        self.feature_maps = {}
+    
+    def get_feature_map(self, layer_name):
+        """특정 레이어의 특징 맵 반환"""
+        return self.feature_maps.get(layer_name, None)
+
+# ============================================================================
 # 분류 함수
 # ============================================================================
 
-def classify_image_jetson(net, frame):
+def classify_image_jetson(net, frame, extract_features=False):
     """Jetson용 이미지 분류"""
     # OpenCV BGR을 CUDA 이미지로 변환
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -509,12 +601,25 @@ def classify_image_jetson(net, frame):
     # 단일 결과만 반환
     top5_results = [(predicted_class, confidence_percent)]
     
-    return predicted_class, confidence_percent, top5_results, inference_time
+    # 특징 맵 추출 (Jetson에서는 제한적)
+    feature_maps = None
+    if extract_features:
+        # Jetson API는 중간 레이어 접근이 제한적
+        feature_maps = {
+            'layer_name': 'output',
+            'feature_map': None,
+            'shape': None,
+            'available': False,
+            'message': 'Jetson TensorRT API는 중간 레이어 접근을 지원하지 않습니다.'
+        }
+    
+    return predicted_class, confidence_percent, top5_results, inference_time, feature_maps
 
-def classify_image_pytorch(model_dict, frame):
+def classify_image_pytorch(model_dict, frame, extract_features=False):
     """PyTorch용 이미지 분류"""
     model = model_dict['model']
     transform = model_dict['transform']
+    extractor = model_dict.get('extractor', None)
     
     # OpenCV BGR을 RGB로 변환
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -527,6 +632,22 @@ def classify_image_pytorch(model_dict, frame):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     input_batch = input_batch.to(device)
+    
+    # 특징 맵 추출을 위한 hook 설정
+    feature_maps = None
+    if extract_features and extractor is not None:
+        extractor.clear_hooks()
+        # GoogleNet의 마지막 Inception 모듈 (inception5b)에서 특징 맵 추출
+        if hasattr(model, 'inception5b'):
+            extractor.register_hook('inception5b', model.inception5b)
+        elif hasattr(model, 'Inception5b'):
+            extractor.register_hook('inception5b', model.Inception5b)
+        else:
+            # 대체: 마지막 conv 레이어 찾기
+            for name, module in model.named_modules():
+                if 'conv' in name.lower() and len(list(module.children())) == 0:
+                    extractor.register_hook(name, module)
+                    break
     
     start_time = time.time()
     with torch.no_grad():
@@ -542,12 +663,42 @@ def classify_image_pytorch(model_dict, frame):
     
     top5_results = [(predicted_class, confidence_percent)]
     
-    return predicted_class, confidence_percent, top5_results, inference_time
+    # 특징 맵 추출
+    if extract_features and extractor is not None:
+        feature_map_data = None
+        layer_name = None
+        for name, fm in extractor.feature_maps.items():
+            feature_map_data = fm
+            layer_name = name
+            break
+        
+        if feature_map_data is not None:
+            # 배치 차원 제거 (배치 크기가 1인 경우)
+            if len(feature_map_data.shape) == 4 and feature_map_data.shape[0] == 1:
+                feature_map_data = feature_map_data[0]
+            
+            feature_maps = {
+                'layer_name': layer_name or 'unknown',
+                'feature_map': feature_map_data,
+                'shape': feature_map_data.shape if feature_map_data is not None else None,
+                'available': True
+            }
+        else:
+            feature_maps = {
+                'layer_name': 'unknown',
+                'feature_map': None,
+                'shape': None,
+                'available': False,
+                'message': '특징 맵을 추출할 수 없습니다.'
+            }
+    
+    return predicted_class, confidence_percent, top5_results, inference_time, feature_maps
 
-def classify_image_tensorflow(model_dict, frame):
+def classify_image_tensorflow(model_dict, frame, extract_features=False):
     """TensorFlow용 이미지 분류"""
     model = model_dict['model']
     preprocess = model_dict.get('preprocess', None)
+    feature_model = model_dict.get('feature_model', None)
     
     # OpenCV BGR을 RGB로 변환
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -577,21 +728,57 @@ def classify_image_tensorflow(model_dict, frame):
     
     top5_results = [(predicted_class, confidence_percent)]
     
-    return predicted_class, confidence_percent, top5_results, inference_time
+    # 특징 맵 추출
+    feature_maps = None
+    if extract_features:
+        if feature_model is not None:
+            try:
+                feature_map_data = feature_model(img_array)
+                if hasattr(feature_map_data, 'numpy'):
+                    feature_map_data = feature_map_data.numpy()
+                
+                # 배치 차원 제거
+                if len(feature_map_data.shape) == 4 and feature_map_data.shape[0] == 1:
+                    feature_map_data = feature_map_data[0]
+                
+                feature_maps = {
+                    'layer_name': 'intermediate_layer',
+                    'feature_map': feature_map_data,
+                    'shape': feature_map_data.shape,
+                    'available': True
+                }
+            except Exception as e:
+                feature_maps = {
+                    'layer_name': 'unknown',
+                    'feature_map': None,
+                    'shape': None,
+                    'available': False,
+                    'message': f'특징 맵 추출 실패: {str(e)}'
+                }
+        else:
+            feature_maps = {
+                'layer_name': 'unknown',
+                'feature_map': None,
+                'shape': None,
+                'available': False,
+                'message': '특징 맵 모델이 설정되지 않았습니다.'
+            }
+    
+    return predicted_class, confidence_percent, top5_results, inference_time, feature_maps
 
-def classify_image(net, frame):
+def classify_image(net, frame, extract_features=False):
     """통합 이미지 분류 함수 (환경 자동 감지)"""
     if JETSON_AVAILABLE and isinstance(net, jetson.inference.imageNet):
-        return classify_image_jetson(net, frame)
+        return classify_image_jetson(net, frame, extract_features)
     elif isinstance(net, dict):
         if 'transform' in net:  # PyTorch
-            return classify_image_pytorch(net, frame)
+            return classify_image_pytorch(net, frame, extract_features)
         elif 'model' in net:  # TensorFlow
-            return classify_image_tensorflow(net, frame)
+            return classify_image_tensorflow(net, frame, extract_features)
     
     # 기본값
     print("Error: 알 수 없는 모델 타입")
-    return "unknown", 0.0, [], 0.0
+    return "unknown", 0.0, [], 0.0, None
 
 def get_manual_description(object_name):
     """수동 설명 반환"""
@@ -605,6 +792,151 @@ def get_manual_description(object_name):
             return MANUAL_DESCRIPTIONS[key]
     
     return f"This is a {object_name}."
+
+# ============================================================================
+# 특징 맵 저장 및 시각화 함수
+# ============================================================================
+
+def save_feature_map(feature_maps, model_name, predicted_class, output_dir):
+    """특징 맵 저장"""
+    if feature_maps is None or not feature_maps.get('available', False):
+        print("  Warning: 특징 맵을 저장할 수 없습니다.")
+        return None
+    
+    feature_map_dir = os.path.join(output_dir, 'feature_maps', model_name.replace(' ', '_'))
+    os.makedirs(feature_map_dir, exist_ok=True)
+    
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    base_filename = f"feature_map_{predicted_class}_{timestamp}"
+    
+    # NumPy 배열 저장
+    feature_map_data = feature_maps['feature_map']
+    npy_path = os.path.join(feature_map_dir, f"{base_filename}.npy")
+    np.save(npy_path, feature_map_data)
+    print(f"  특징 맵 저장: {npy_path}")
+    
+    # 메타데이터 저장
+    metadata = {
+        'layer_name': feature_maps.get('layer_name', 'unknown'),
+        'shape': feature_maps.get('shape', None),
+        'predicted_class': predicted_class,
+        'timestamp': timestamp,
+        'model_name': model_name
+    }
+    metadata_path = os.path.join(feature_map_dir, f"{base_filename}_metadata.json")
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    return npy_path
+
+def visualize_feature_map(feature_maps, save_path=None, top_k=16):
+    """특징 맵 시각화"""
+    if feature_maps is None or not feature_maps.get('available', False):
+        print("  Warning: 특징 맵을 시각화할 수 없습니다.")
+        return None
+    
+    feature_map_data = feature_maps['feature_map']
+    
+    # 특징 맵 shape 확인 및 변환
+    if len(feature_map_data.shape) == 3:
+        # Shape 판단: 첫 번째 차원이 가장 크면 (C, H, W), 마지막 차원이 가장 크면 (H, W, C)
+        if feature_map_data.shape[0] > feature_map_data.shape[2]:
+            # (C, H, W) 형식
+            channels, height, width = feature_map_data.shape
+            # 각 채널을 개별적으로 처리하기 위해 (H, W, C)로 변환하지 않고 그대로 사용
+            channel_data = feature_map_data  # (C, H, W) 유지
+        else:
+            # (H, W, C) 형식
+            height, width, channels = feature_map_data.shape
+            # (C, H, W)로 변환
+            channel_data = np.transpose(feature_map_data, (2, 0, 1))
+    else:
+        print(f"  Warning: 예상치 못한 특징 맵 shape: {feature_map_data.shape}")
+        return None
+    
+    print(f"  특징 맵 shape: ({channels}, {height}, {width})")
+    
+    # 채널별로 정규화 및 시각화
+    num_channels = min(channels, top_k)
+    
+    # 각 채널의 활성화 값 계산 (평균 및 최대값)
+    channel_activations = []
+    for i in range(channels):
+        channel = channel_data[i]  # (H, W)
+        mean_activation = np.mean(channel)
+        max_activation = np.max(channel)
+        std_activation = np.std(channel)
+        # 활성화 점수: 평균 + 표준편차 (더 활성화된 채널 우선)
+        activation_score = mean_activation + 0.5 * std_activation
+        channel_activations.append((i, mean_activation, max_activation, activation_score))
+    
+    # 상위 활성화 채널 선택 (activation_score 기준)
+    channel_activations.sort(key=lambda x: x[3], reverse=True)
+    top_channels = [idx for idx, _, _, _ in channel_activations[:num_channels]]
+    
+    # 그리드로 시각화
+    cols = 4
+    rows = (num_channels + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(16, 4 * rows))
+    fig.suptitle(f'Feature Maps - Layer: {feature_maps.get("layer_name", "unknown")} (Top {num_channels}/{channels} channels)', 
+                 fontsize=16, fontweight='bold')
+    
+    # axes 배열 정규화
+    if rows == 1 and cols == 1:
+        axes = np.array([[axes]])
+    elif rows == 1:
+        axes = axes.reshape(1, -1) if hasattr(axes, 'reshape') else np.array([axes])
+    else:
+        axes = axes.flatten() if hasattr(axes, 'flatten') else axes
+        axes = axes.reshape(rows, cols)
+    
+    for idx, channel_idx in enumerate(top_channels):
+        row = idx // cols
+        col = idx % cols
+        
+        channel = channel_data[channel_idx]  # (H, W)
+        
+        # 정규화 (0-1 범위)
+        channel_min = channel.min()
+        channel_max = channel.max()
+        if channel_max > channel_min:
+            channel_norm = (channel - channel_min) / (channel_max - channel_min)
+        else:
+            channel_norm = np.zeros_like(channel)
+        
+        # 시각화 (더 나은 컬러맵 사용)
+        im = axes[row, col].imshow(channel_norm, cmap='hot', interpolation='bilinear', aspect='auto')
+        
+        # 제목에 활성화 정보 표시
+        mean_val = channel_activations[idx][1]
+        max_val = channel_activations[idx][2]
+        axes[row, col].set_title(f'Channel {channel_idx}\nMean: {mean_val:.3f} | Max: {max_val:.3f}', 
+                                fontsize=9, pad=5)
+        axes[row, col].axis('off')
+    
+    # 빈 subplot 숨기기
+    for idx in range(num_channels, rows * cols):
+        row = idx // cols
+        col = idx % cols
+        if isinstance(axes, np.ndarray) and axes.ndim == 2:
+            axes[row, col].axis('off')
+        else:
+            try:
+                axes[idx].axis('off')
+            except:
+                pass
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='white')
+        print(f"  특징 맵 시각화 저장: {save_path}")
+    else:
+        plt.show()
+    
+    plt.close()
+    
+    return save_path
 
 def speak_text_gtts(text):
     """TTS 음성 출력"""
@@ -638,6 +970,106 @@ def speak_text_gtts(text):
     thread.start()
 
 # ============================================================================
+# 캡션 생성 함수
+# ============================================================================
+
+def load_caption_model(config=None):
+    """캡션 생성 모델 로드"""
+    if not GUR_MODEL_AVAILABLE or not TORCH_AVAILABLE:
+        return None
+    
+    if config is None:
+        config = CAPTION_MODEL_CONFIG
+    
+    try:
+        print("\n캡션 생성 모델 초기화 중...")
+        decoder = LightweightCaptionDecoder(
+            attention_dim=config['attention_dim'],
+            embed_dim=config['embed_dim'],
+            decoder_dim=config['decoder_dim'],
+            vocab_size=config['vocab_size'],
+            encoder_dim=config['encoder_dim']
+        )
+        
+        # 학습된 가중치 로드 (있는 경우)
+        if config.get('model_path') and os.path.exists(config['model_path']):
+            decoder.load_state_dict(torch.load(config['model_path'], map_location='cpu'))
+            print(f"  학습된 가중치 로드: {config['model_path']}")
+        else:
+            print("  Warning: 학습된 가중치가 없습니다. 랜덤 초기화된 모델을 사용합니다.")
+            print("  실제 사용 시 학습된 모델을 로드해야 합니다.")
+        
+        decoder.eval()
+        print("  완료!\n")
+        return decoder
+        
+    except Exception as e:
+        print(f"Error: 캡션 모델 로드 실패 - {e}")
+        return None
+
+def generate_caption_from_feature_map(feature_maps, caption_model, vocab=None, rev_vocab=None):
+    """특징 맵으로부터 캡션 생성"""
+    if not GUR_MODEL_AVAILABLE or not TORCH_AVAILABLE:
+        return None, "PyTorch 또는 GUR 모델을 사용할 수 없습니다."
+    
+    if caption_model is None:
+        return None, "캡션 모델이 로드되지 않았습니다."
+    
+    if feature_maps is None or not feature_maps.get('available', False):
+        return None, "특징 맵을 사용할 수 없습니다."
+    
+    try:
+        feature_map_data = feature_maps['feature_map']
+        
+        # NumPy 배열을 PyTorch 텐서로 변환
+        if isinstance(feature_map_data, np.ndarray):
+            # Shape 확인 및 변환: (C, H, W) 형식으로 변환
+            if len(feature_map_data.shape) == 3:
+                if feature_map_data.shape[0] > feature_map_data.shape[2]:
+                    # 이미 (C, H, W) 형식
+                    feature_tensor = torch.from_numpy(feature_map_data).float()
+                else:
+                    # (H, W, C) 형식 -> (C, H, W)로 변환
+                    feature_tensor = torch.from_numpy(np.transpose(feature_map_data, (2, 0, 1))).float()
+            else:
+                return None, f"예상치 못한 특징 맵 shape: {feature_map_data.shape}"
+        else:
+            feature_tensor = feature_map_data
+        
+        # GPU 사용 가능 시
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        caption_model = caption_model.to(device)
+        feature_tensor = feature_tensor.to(device)
+        
+        # 캡션 생성
+        caption_ids, attention_weights = caption_model.generate_caption(
+            feature_tensor,
+            max_len=20,
+            start_token=0,
+            end_token=1
+        )
+        
+        # ID를 단어로 변환
+        if rev_vocab is None:
+            rev_vocab = DEFAULT_REV_VOCAB
+        
+        caption_words = []
+        for word_id in caption_ids:
+            if word_id in rev_vocab:
+                word = rev_vocab[word_id]
+                if word not in ['<start>', '<end>', '<pad>', '<unk>']:
+                    caption_words.append(word)
+            else:
+                caption_words.append(f"<{word_id}>")
+        
+        caption_text = " ".join(caption_words) if caption_words else "No caption generated"
+        
+        return caption_text, attention_weights
+        
+    except Exception as e:
+        return None, f"캡션 생성 실패: {str(e)}"
+
+# ============================================================================
 # 모델 실행 함수
 # ============================================================================
 
@@ -647,19 +1079,29 @@ def run_model(net, model_name, results_dict):
         print(f"Error: {model_name} 모델을 사용할 수 없습니다.")
         return
     
+    # 캡션 모델 로드 (가능한 경우)
+    caption_model = None
+    if GUR_MODEL_AVAILABLE and TORCH_AVAILABLE:
+        caption_model = load_caption_model()
+    
     cap = cv2.VideoCapture(0)
     
     print("\n" + "="*70)
     print(f"=== {model_name} 실행 중 ===")
     print("="*70)
     print("\nKey commands:")
-    print("  's' : 분류 및 음성 출력")
+    print("  's' : 분류 및 음성 출력 (특징 맵 자동 추출)")
+    print("  'f' : 특징 맵 저장 및 시각화")
+    print("  'v' : 특징 맵 시각화 창 표시")
+    print("  'c' : 캡션 생성 (특징 맵 사용)")
     print("  'r' : 마지막 설명 다시 듣기")
     print("  'q' : 다음 모델로 이동\n")
     
     description = ""
     last_object = None
     last_full_description = ""
+    last_feature_maps = None
+    last_caption = None
     is_processing = False
     
     while True:
@@ -691,6 +1133,38 @@ def run_model(net, model_name, results_dict):
             cv2.rectangle(frame, (5, 5), (450, 55), (0, 0, 0), -1)
             cv2.putText(frame, f"Detected: {last_object}", (10, 35),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+        
+        # 생성된 캡션 표시
+        if last_caption and not is_processing:
+            caption_y = 60
+            max_width = frame.shape[1] - 20
+            words = last_caption.split()
+            line = ""
+            line_num = 0
+            
+            for word in words:
+                test_line = line + word + " "
+                text_size = cv2.getTextSize(test_line, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
+                
+                if text_size[0] > max_width:
+                    text_size_actual = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
+                    cv2.rectangle(frame, (5, caption_y + line_num * 20 - 15), 
+                                (15 + text_size_actual[0], caption_y + line_num * 20 + 5), 
+                                (0, 0, 0), -1)
+                    cv2.putText(frame, line, (10, caption_y + line_num * 20),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
+                    line = word + " "
+                    line_num += 1
+                else:
+                    line = test_line
+            
+            if line:
+                text_size_actual = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
+                cv2.rectangle(frame, (5, caption_y + line_num * 20 - 15), 
+                            (15 + text_size_actual[0], caption_y + line_num * 20 + 5), 
+                            (0, 0, 0), -1)
+                cv2.putText(frame, line, (10, caption_y + line_num * 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
         
         # 설명 표시
         if description and not is_processing:
@@ -739,20 +1213,76 @@ def run_model(net, model_name, results_dict):
             print("\n" + "="*70)
             print("이미지 분류 중...")
             
-            predicted_class, confidence, top5, inf_time = classify_image(net, frame)
+            # 특징 맵도 함께 추출
+            predicted_class, confidence, top5, inf_time, feature_maps = classify_image(
+                net, frame, extract_features=True
+            )
             results_dict['inference_times'].append(inf_time)
             
             print(f"\n인식 결과: {predicted_class}")
             print(f"  신뢰도: {confidence:.1f}%")
             print(f"  추론 시간: {inf_time:.2f}ms")
             
+            # 특징 맵 정보 출력
+            if feature_maps and feature_maps.get('available', False):
+                print(f"  특징 맵: {feature_maps.get('layer_name', 'unknown')}")
+                print(f"    Shape: {feature_maps.get('shape', 'unknown')}")
+            elif feature_maps:
+                print(f"  특징 맵: 추출 불가 - {feature_maps.get('message', 'unknown error')}")
+            
             last_object = predicted_class
+            last_feature_maps = feature_maps if feature_maps and feature_maps.get('available', False) else None
             
             description = get_manual_description(predicted_class)
             last_full_description = description
             print(f"\n설명: {description}")
             
             speak_text_gtts(description)
+            print("="*70 + "\n")
+            is_processing = False
+            
+        elif key == ord('f') and not is_processing and last_feature_maps is not None:
+            # 특징 맵 저장 및 시각화
+            print("\n" + "="*70)
+            print("특징 맵 저장 및 시각화 중...")
+            
+            npy_path = save_feature_map(last_feature_maps, model_name, last_object, OUTPUT_DIR)
+            if npy_path:
+                # 시각화 저장 경로
+                viz_path = npy_path.replace('.npy', '_visualization.png')
+                visualize_feature_map(last_feature_maps, save_path=viz_path)
+            
+            print("="*70 + "\n")
+            
+        elif key == ord('v') and not is_processing and last_feature_maps is not None:
+            # 특징 맵 시각화 창 표시
+            print("\n특징 맵 시각화 중...")
+            visualize_feature_map(last_feature_maps, save_path=None)
+            
+        elif key == ord('c') and not is_processing and last_feature_maps is not None:
+            # 캡션 생성
+            is_processing = True
+            print("\n" + "="*70)
+            print("캡션 생성 중...")
+            
+            if caption_model is None:
+                print("  Error: 캡션 모델이 로드되지 않았습니다.")
+                print("  GUR_model.py와 PyTorch가 필요합니다.")
+            else:
+                caption_text, attention_weights = generate_caption_from_feature_map(
+                    last_feature_maps, caption_model
+                )
+                
+                if caption_text:
+                    last_caption = caption_text
+                    print(f"\n생성된 캡션: {caption_text}")
+                    print(f"  어텐션 맵 수: {len(attention_weights) if attention_weights else 0}")
+                    
+                    # 캡션 음성 출력
+                    speak_text_gtts(caption_text)
+                else:
+                    print(f"  Error: {attention_weights if isinstance(attention_weights, str) else '캡션 생성 실패'}")
+            
             print("="*70 + "\n")
             is_processing = False
             
