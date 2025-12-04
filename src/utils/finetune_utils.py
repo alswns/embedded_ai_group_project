@@ -4,7 +4,6 @@
 
 import os
 import torch
-import torch.nn as nn
 
 
 def load_checkpoint(label, device):
@@ -48,7 +47,7 @@ def setup_training(model, learning_rate, device):
         print(f"   🔒 Encoder Freeze: CNN 파라미터 학습 금지")
     
     # Optimizer 설정
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
+    criterion = torch.nn.CrossEntropyLoss(ignore_index=0)
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = torch.optim.Adam(trainable_params, lr=learning_rate)
     

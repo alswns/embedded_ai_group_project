@@ -408,30 +408,27 @@ def validate_epoch(model, val_dataloader, criterion, epoch, vocab_size):
 
 
 def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_samples=5, start_idx=0):
-    """여러 샘플 이미지로 캡션을 생성하고 METEOR 점수로 검증"""
+    """val 데이터셋 전체의 평균 METEOR 점수 계산"""
     model.eval()
     
-    results = []
     meteor_scores = []
     
+    # 전체 val 데이터셋 사용 (num_samples는 무시)
+    total_samples = len(dataset)
+    
     print(f"\n{'='*70}")
-    print(f"🔍 검증: {num_samples}개 샘플로 캡션 생성 및 METEOR 평가")
+    print(f"🔍 검증 데이터셋 평가: {total_samples}개 샘플의 평균 METEOR 계산")
     print(f"{'='*70}")
     
     with torch.no_grad():
-        for i in range(num_samples):
-            idx = (start_idx + i) % len(dataset)
-            
-            img_name, original_caption = dataset.image_caption_pairs[idx]
-            image, _ = dataset[idx]
-            
-            # 이미지 파일 전체 경로
-            img_path = os.path.join(dataset.images_dir, img_name)
-            
-            # 배치 차원 추가 [1, 3, 224, 224]
-            image = image.unsqueeze(0).to(device)
-            
+        for i in range(total_samples):
             try:
+                img_name, original_caption = dataset.image_caption_pairs[i]
+                image, _ = dataset[i]
+                
+                # 배치 차원 추가 [1, 3, 224, 224]
+                image = image.unsqueeze(0).to(device)
+                
                 # 캡션 생성
                 generated_words = model.generate(image, word_map, rev_word_map, max_len=MAX_CAPTION_LEN)
                 
@@ -461,44 +458,29 @@ def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_sample
                 
                 meteor_scores.append(meteor)
                 
-                results.append({
-                    'img_name': img_name,
-                    'original': original_caption,
-                    'generated': generated_caption,
-                    'meteor': meteor
-                })
-                
-                # 각 샘플 출력
-                print(f"\n[샘플 {i+1}/{num_samples}]")
-                print(f"  📸 이미지: {img_name}")
-                print(f"  📝 원본: {original_caption}")
-                print(f"  🤖 생성: {generated_caption}")
-                print(f"  ⭐ METEOR: {meteor:.4f}")
-                
+                # 진행도 표시 (100개마다)
+                if (i + 1) % 100 == 0:
+                    current_avg = sum(meteor_scores) / len(meteor_scores)
+                    print(f"  진행: {i+1}/{total_samples}, 현재 평균 METEOR: {current_avg:.4f}")
+                    
             except Exception as e:
                 print(f"  ⚠️ 샘플 {i+1} 생성 실패: {e}")
                 meteor_scores.append(0.0)
-                results.append({
-                    'img_name': img_name,
-                    'original': original_caption,
-                    'generated': '생성 실패',
-                    'meteor': 0.0
-                })
     
-    # 전체 통계 출력
+    # 전체 평균 METEOR 점수
     avg_meteor = sum(meteor_scores) / len(meteor_scores) if meteor_scores else 0.0
-    good_results = sum([1 for score in meteor_scores if score > 0.3])  # 0.3 이상을 좋은 결과로 간주
     
     print(f"\n{'='*70}")
-    print(f"📈 METEOR 검증 통계:")
+    print(f"📈 검증 데이터셋 METEOR 통계:")
+    print(f"  • 평가 샘플: {total_samples}개")
     print(f"  • 평균 METEOR 점수: {avg_meteor:.4f}")
-    print(f"  • 최고 METEOR 점수: {max(meteor_scores):.4f}")
-    print(f"  • 최저 METEOR 점수: {min(meteor_scores):.4f}")
-    print(f"  • 좋은 결과 비율: {good_results}/{num_samples} ({good_results/num_samples*100:.1f}%)")
-    print(f"  • METEOR 점수 분포:")
-    print(f"    - 0.5 이상 (우수): {sum([1 for s in meteor_scores if s >= 0.5])}개")
-    print(f"    - 0.3-0.5 (양호): {sum([1 for s in meteor_scores if 0.3 <= s < 0.5])}개")
-    print(f"    - 0.3 미만 (개선 필요): {sum([1 for s in meteor_scores if s < 0.3])}개")
+    if meteor_scores:
+        print(f"  • 최고 METEOR 점수: {max(meteor_scores):.4f}")
+        print(f"  • 최저 METEOR 점수: {min(meteor_scores):.4f}")
+        print(f"  • METEOR 점수 분포:")
+        print(f"    - 0.5 이상 (우수): {sum([1 for s in meteor_scores if s >= 0.5])}개")
+        print(f"    - 0.3-0.5 (양호): {sum([1 for s in meteor_scores if 0.3 <= s < 0.5])}개")
+        print(f"    - 0.3 미만 (개선 필요): {sum([1 for s in meteor_scores if s < 0.3])}개")
     print(f"{'='*70}\n")
     
     model.train()  # 다시 학습 모드로
@@ -507,7 +489,7 @@ def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_sample
         'avg_meteor': avg_meteor,
         'max_meteor': max(meteor_scores) if meteor_scores else 0.0,
         'min_meteor': min(meteor_scores) if meteor_scores else 0.0,
-        'good_results': good_results / num_samples if num_samples > 0 else 0.0
+        'meteor_scores': meteor_scores
     }
 
 # --- [4] 메인 실행 코드 ---
@@ -632,7 +614,7 @@ def main():
     if os.path.exists(checkpoint_path):
         print(f"📂 체크포인트 발견: {checkpoint_path}")
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=device)
+            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
             if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['model_state_dict'])
                 start_epoch = checkpoint.get('epoch', 0)
@@ -688,7 +670,7 @@ def main():
     print(f"배치 크기: {BATCH_SIZE}, 디바이스: {device}, Mixed Precision: {use_mixed_precision}")
     
     # 검증 설정
-    VAL_NUM_SAMPLES = min(5, len(val_dataset))  # 검증에 사용할 샘플 수
+    VAL_NUM_SAMPLES = max(5, len(val_dataset))  # 검증에 사용할 샘플 수
     
     # 학습 이력 추적
     train_losses = []
@@ -711,12 +693,10 @@ def main():
         val_losses.append(avg_val_loss)
         print(f"✅ 검증 완료. 평균 Loss: {avg_val_loss:.4f}")
         
-        # 여러 샘플로 세부 검증 및 METEOR 점수 계산
-        print(f"\n📸 세부 검증 (METEOR 점수):")
+        # 검증 데이터셋 전체의 평균 METEOR 점수 계산
+        print(f"\n📸 검증 데이터셋 평가 (전체 METEOR):")
         val_results = evaluate_multiple_samples(
-            model, val_dataset.dataset, word_map, rev_word_map, 
-            num_samples=VAL_NUM_SAMPLES, 
-            start_idx=(epoch * VAL_NUM_SAMPLES) % len(val_dataset)
+            model, val_dataset.dataset, word_map, rev_word_map
         )
         
         # METEOR 점수 추출

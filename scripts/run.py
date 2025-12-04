@@ -77,7 +77,7 @@ def load_model():
     
     try:
         print(f"📂 모델 로드 중: {MODEL_PATH}")
-        checkpoint = torch.load(MODEL_PATH, map_location=device)
+        checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=False)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             word_map = checkpoint.get('word_map')

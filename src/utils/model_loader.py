@@ -39,7 +39,7 @@ def load_base_model(model_path=None, device=None):
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"모델 파일을 찾을 수 없습니다: {model_path}")
     
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
     # 체크포인트에서 정보 추출
     if isinstance(checkpoint, dict):

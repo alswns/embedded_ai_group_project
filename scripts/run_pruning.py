@@ -34,7 +34,7 @@ from src.utils import (
 )
 
 # Pruning 유틸리티 import
-from pruning_utils import (
+from src.utils.pruning_utils import (
     count_nonzero_parameters,
     update_linear_layer,
     compute_hessian_importance,
@@ -42,14 +42,14 @@ from pruning_utils import (
 )
 
 # Benchmark 유틸리티 import
-from benchmark_utils import (
+from src.utils.benchmark_utils import (
     calculate_model_size_mb,
     calculate_sparsity,
     measure_inference_time,
 )
 
 # Finetune 유틸리티 import
-from finetune_utils import (
+from src.utils.finetune_utils import (
     load_checkpoint,
     setup_training,
     save_checkpoint,
@@ -72,8 +72,8 @@ PRUNING_METHODS = ['magnitude', 'structured']  # 프루닝 방법
 ENABLE_MAGNITUDE_PRUNING = False  # ⚠️ Magnitude Pruning은 이 모델에 비효율적 (결과 참고)
 MAX_PRUNING_RATE = 0.51  # ⚠️ 30% 이상 프루닝은 정확도 급격히 하락 (50% 이상은 거의 작동 불가)
 METEO_IMAGE_NUM=100
-FINETUNE_EPOCHS=10
-LEARNING_RATE=5e-5  # 파인튜닝 학습률 (사용자 설정 가능)
+FINETUNE_EPOCHS=20
+LEARNING_RATE=2.5e-5  # 파인튜닝 학습률 (사용자 설정 가능)
 EARLY_STOPPING_PATIENCE=2  # Early Stopping 인내심 (3 epoch 동안 개선 없으면 중지)
 VALIDATION_SPLIT=0.2  # 검증 데이터셋 비율 (20%)
 # 디바이스 선택
@@ -388,11 +388,47 @@ def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None, 
             print(f"⚠️ Warm-up 실패: {e}")
             return None
     
-    # benchmark_utils를 사용한 시간 및 메모리 측정
-    inference_metrics = measure_inference_time(model, inp, num_runs=NUM_RUNS, warmup=5)
+    # 직접 추론 시간 측정 (word_map, rev_word_map 포함)
+    model_device = next(model.parameters()).device
+    inp = img_tensor.clone().detach().to(model_device)
     
-    latencies = [inference_metrics['mean_ms']] * NUM_RUNS  # 평균값 사용
-    memory_usages = [get_peak_memory_mb()] * NUM_RUNS  # 평균 메모리 사용
+    # Warm-up
+    with torch.no_grad():
+        try:
+            _ = model.generate(inp, wm, rwm, 20)
+        except Exception as e:
+            print(f"⚠️ Warm-up 실패: {e}")
+            return None
+    
+    # GC 한 번만 수행
+    gc.collect()
+    if model_device.type == 'cuda':
+        torch.cuda.empty_cache()
+    
+    latencies = []
+    
+    for _ in range(NUM_RUNS):
+        if model_device.type == 'cuda':
+            torch.cuda.synchronize()
+        
+        start = time.time()
+        with torch.no_grad():
+            _ = model.generate(inp, wm, rwm, 20)
+        
+        if model_device.type == 'cuda':
+            torch.cuda.synchronize()
+        
+        latency = (time.time() - start) * 1000  # ms
+        latencies.append(latency)
+    
+    inference_metrics = {
+        'mean_ms': np.mean(latencies),
+        'std_ms': np.std(latencies),
+        'min_ms': np.min(latencies),
+        'max_ms': np.max(latencies),
+    }
+    
+    memory_usages = [get_peak_memory_mb()] * NUM_RUNS
     
     print(f"   ⏱️ 평균 추론 시간: {inference_metrics['mean_ms']:.2f} ± {inference_metrics['std_ms']:.2f} ms")
     print(f"   🧠 메모리 사용량: {get_peak_memory_mb():.2f} MB")
