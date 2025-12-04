@@ -658,13 +658,12 @@ def main():
     # filter를 써서 requires_grad=True인 파라미터(디코더)만 업데이트 목록에 넣음
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=LEARNING_RATE)
     
-    # 스케줄러: 검증 손실 기반으로 학습률 동적 조정
+    # 스케줄러: METEOR 점수 기반으로 학습률 동적 조정
     scheduler = ReduceLROnPlateau(
         optimizer, 
-        mode='min',           # 손실(min)이 기준 (손실이 낮을수록 좋음)
+        mode='max',           # METEOR(max)이 기준 (METEOR가 높을수록 좋음)
         factor=0.66,          # 학습률을 0.66배 감소
         patience=2,           # 2 에포크 동안 개선 없으면 학습률 감소
-        
         min_lr=1e-6           # 최소 학습률
     )
     # 6. 손실 함수 (Padding=0 무시)
@@ -712,18 +711,21 @@ def main():
         val_losses.append(avg_val_loss)
         print(f"✅ 검증 완료. 평균 Loss: {avg_val_loss:.4f}")
         
-        # 스케줄러 업데이트 (검증 손실 기반)
-        scheduler.step(avg_val_loss)
-        current_lr = optimizer.param_groups[0]['lr']
-        print(f"📊 스케줄러 업데이트 - 현재 Learning Rate: {current_lr:.2e}")
-        
-        # 여러 샘플로 세부 검증 및 출력
+        # 여러 샘플로 세부 검증 및 METEOR 점수 계산
         print(f"\n📸 세부 검증 (METEOR 점수):")
         val_results = evaluate_multiple_samples(
             model, val_dataset.dataset, word_map, rev_word_map, 
             num_samples=VAL_NUM_SAMPLES, 
             start_idx=(epoch * VAL_NUM_SAMPLES) % len(val_dataset)
         )
+        
+        # METEOR 점수 추출
+        avg_meteor = val_results.get('avg_meteor', 0.0) if val_results else 0.0
+        
+        # 스케줄러 업데이트 (METEOR 점수 기반)
+        scheduler.step(avg_meteor)
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"📊 스케줄러 업데이트 - METEOR: {avg_meteor:.4f}, Learning Rate: {current_lr:.2e}")
         
         # [옵션] 특정 Epoch 이후에 인코더도 같이 학습시키고 싶다면? (Fine-tuning)
         if ENCODER_FINE_TUNING and epoch == 5:
@@ -736,7 +738,7 @@ def main():
             optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE * 0.1)
             scheduler = ReduceLROnPlateau(
                 optimizer, 
-                mode='min', 
+                mode='max',      # METEOR(max)이 기준
                 factor=0.66, 
                 patience=2,
             )

@@ -33,6 +33,30 @@ from src.utils import (
     CAPTIONS_FILE,
 )
 
+# Pruning 유틸리티 import
+from pruning_utils import (
+    count_nonzero_parameters,
+    update_linear_layer,
+    compute_hessian_importance,
+    compute_channel_importance_hessian,
+)
+
+# Benchmark 유틸리티 import
+from benchmark_utils import (
+    calculate_model_size_mb,
+    calculate_sparsity,
+    measure_inference_time,
+)
+
+# Finetune 유틸리티 import
+from finetune_utils import (
+    load_checkpoint,
+    setup_training,
+    save_checkpoint,
+    print_checkpoint_info,
+    restore_optimizer,
+)
+
 # ============================================================================
 # 설정
 # ============================================================================
@@ -48,6 +72,10 @@ PRUNING_METHODS = ['magnitude', 'structured']  # 프루닝 방법
 ENABLE_MAGNITUDE_PRUNING = False  # ⚠️ Magnitude Pruning은 이 모델에 비효율적 (결과 참고)
 MAX_PRUNING_RATE = 0.51  # ⚠️ 30% 이상 프루닝은 정확도 급격히 하락 (50% 이상은 거의 작동 불가)
 METEO_IMAGE_NUM=100
+FINETUNE_EPOCHS=10
+LEARNING_RATE=5e-5  # 파인튜닝 학습률 (사용자 설정 가능)
+EARLY_STOPPING_PATIENCE=2  # Early Stopping 인내심 (3 epoch 동안 개선 없으면 중지)
+VALIDATION_SPLIT=0.2  # 검증 데이터셋 비율 (20%)
 # 디바이스 선택
 device = setup_device()
 
@@ -55,270 +83,8 @@ device = setup_device()
 transform = get_image_transform()
 
 # ============================================================================
-# Pruning 전용 유틸리티 함수
-# ============================================================================
-def count_nonzero_parameters(model):
-    """0이 아닌 파라미터 개수 계산 (프루닝 후)"""
-    nonzero_params = 0
-    total_params = 0
-    for param in model.parameters():
-        total_params += param.numel()
-        nonzero_params += param.nonzero().size(0) if param.numel() > 0 else 0
-    return nonzero_params, total_params
-
-def convert_to_sparse_model(model):
-    """Pruning된 모델을 실제로 sparse format으로 변환하여 크기 감소"""
-    # 주의: 실제로 모델 구조를 변경하는 것은 복잡하므로
-    # 여기서는 가중치를 sparse tensor로 변환하는 대신
-    # 실제 0이 아닌 파라미터만 계산하는 방식 사용
-    # 실제 배포 시에는 sparse format으로 저장/로드하는 것이 좋습니다
-    return model
-
-def save_sparse_model(model, path):
-    """모델을 sparse format으로 저장 (실제 크기 감소)"""
-    state_dict = {}
-    for name, param in model.named_parameters():
-        if param.numel() > 0:
-            # 0이 아닌 값만 저장
-            nonzero_mask = param != 0
-            if nonzero_mask.any():
-                # Sparse format으로 저장
-                sparse_param = param[nonzero_mask]
-                indices = nonzero_mask.nonzero(as_tuple=False)
-                state_dict[name] = {
-                    'values': sparse_param.cpu(),
-                    'indices': indices.cpu(),
-                    'shape': list(param.shape),
-                    'dtype': str(param.dtype)
-                }
-            else:
-                # 모든 값이 0인 경우
-                state_dict[name] = {
-                    'values': torch.tensor([], dtype=param.dtype),
-                    'indices': torch.tensor([], dtype=torch.long),
-                    'shape': list(param.shape),
-                    'dtype': str(param.dtype)
-                }
-        else:
-            state_dict[name] = param.cpu()
-    
-    # 버퍼도 저장
-    for name, buffer in model.named_buffers():
-        state_dict[name] = buffer.cpu()
-    
-    torch.save(state_dict, path)
-    print(f"   💾 Sparse 모델 저장: {path}")
-
-def get_sparse_model_size_mb(model):
-    """Sparse format으로 저장했을 때의 실제 모델 크기 계산 (더 현실적인 계산)"""
-    total_size = 0
-    
-    for name, param in model.named_parameters():
-        if param.numel() > 0:
-            # 0이 아닌 값의 개수
-            nonzero_count = (param != 0).sum().item()
-            total_params = param.numel()
-            
-            if nonzero_count > 0:
-                # 값 저장 (0이 아닌 값만) - float32 = 4 bytes
-                total_size += nonzero_count * param.element_size()
-                
-                # 인덱스 저장 (더 효율적인 압축 사용) - int16 = 2 bytes per dimension
-                # CSR (Compressed Sparse Row) format 가정
-                num_dimensions = len(param.shape)
-                # row pointer: shape[0] + 1 elements
-                # column indices: nonzero_count elements
-                # 평균적으로 각 다차원별로 2 bytes
-                indices_size = int(nonzero_count * num_dimensions * 2)
-                
-                total_size += indices_size
-                
-                # 메타데이터 최소화 (형태, dtype 등)
-                total_size += 16  # 최소 메타데이터
-            else:
-                # 모든 값이 0인 경우 최소 메타데이터만
-                total_size += 8
-    
-    # 버퍼 크기 (배치 정규화 등)
-    for name, buffer in model.named_buffers():
-        total_size += buffer.nelement() * buffer.element_size()
-    
-    return total_size / 1024 / 1024
-
-# ============================================================================
-# 데이터 로드 (공통 모듈 사용)
-# ============================================================================
-# load_base_model, load_test_data는 utils에서 import
-
-# ============================================================================
 # Pruning 함수 (물리적 구조 수정)
 # ============================================================================
-
-def get_pruning_mask(weight, pruning_rate, dim=0, use_l2=True):
-    """프루닝 마스크 생성 (제거할 채널/뉴런 식별)
-    
-    Args:
-        weight: 가중치 텐서
-        pruning_rate: 프루닝 비율
-        dim: 프루닝할 차원 (0: 출력, 1: 입력)
-        use_l2: True면 L2 norm 사용, False면 L1 norm 사용
-    """
-    # 중요도 계산: dim 차원을 따라 축약
-    if use_l2:
-        importance = torch.norm(weight, p=2, dim=1 if dim == 0 else 0)
-    else:
-        importance = torch.abs(weight).sum(dim=1 if dim == 0 else 0)
-    
-    # 중요도가 낮은 순서로 정렬
-    num_to_prune = int(pruning_rate * importance.numel())
-    if num_to_prune == 0:
-        return torch.ones(importance.numel(), dtype=torch.bool, device=weight.device)
-    
-    _, indices = torch.sort(importance)
-    mask = torch.ones(importance.numel(), dtype=torch.bool, device=weight.device)
-    mask[indices[:num_to_prune]] = False
-    return mask
-
-def update_linear_layer(old_layer, mask_in=None, mask_out=None, in_size=None, out_size=None):
-    """선형 레이어를 마스크에 따라 업데이트하고 새 레이어 반환
-    
-    Args:
-        old_layer: 기존 nn.Linear 레이어
-        mask_in: 입력 차원 마스크 (True=유지, False=제거)
-        mask_out: 출력 차원 마스크 (기본값: 차원 변경 없음)
-        in_size: 입력 차원 크기 (mask_in 없을 때)
-        out_size: 출력 차원 크기 (mask_out 없을 때)
-    """
-    weight = old_layer.weight.data
-    
-    # 출력/입력 차원 계산
-    if mask_out is not None:
-        new_out = mask_out.sum().item()
-        weight = weight[mask_out, :]
-    else:
-        new_out = out_size or weight.shape[0]
-    
-    if mask_in is not None:
-        new_in = mask_in.sum().item()
-        weight = weight[:, mask_in]
-    else:
-        new_in = in_size or weight.shape[1]
-    
-    # 새 레이어 생성
-    new_layer = nn.Linear(new_in, new_out)
-    new_layer.weight.data = weight
-    
-    # 바이어스 업데이트
-    if old_layer.bias is not None:
-        if mask_out is not None:
-            new_layer.bias.data = old_layer.bias.data[mask_out]
-        else:
-            new_layer.bias.data = old_layer.bias.data.clone()
-    
-    return new_layer
-
-
-def compute_hessian_importance(model, layer, img_tensor, captions_batch, wm, rwm, device, num_samples=64):
-    """Hessian 기반 중요도 계산 (Fisher Information Matrix 근사)
-    
-    실제 Loss(CrossEntropyLoss)를 사용하여 각 채널의 손실에 대한 
-    2계 미분을 계산하여 중요도 판정
-    
-    Args:
-        num_samples: 최소 64개 이상의 샘플로 안정적인 Hessian 추정
-    """
-    model.train()  # Batch Norm 등 변동성 있는 레이어 활성화
-    model.to(device)
-    
-    # CrossEntropyLoss 준비
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
-    
-    importance = None
-    vocab_size = len(wm)
-    
-    # 충분한 샘플 수를 사용하여 Fisher Information 계산
-    num_samples = min(num_samples, len(captions_batch) if isinstance(captions_batch, list) else captions_batch.shape[0])
-    
-    for sample_idx in range(num_samples):
-        model.zero_grad()
-        
-        # Forward pass
-        inp = img_tensor[sample_idx:sample_idx+1].clone().detach().to(device)
-        caps = captions_batch[sample_idx] if isinstance(captions_batch, list) else captions_batch[sample_idx:sample_idx+1]
-        caps = torch.tensor(caps, dtype=torch.long, device=device).unsqueeze(0) if not isinstance(caps, torch.Tensor) else caps.to(device).unsqueeze(0) if caps.dim() == 1 else caps.to(device)
-        
-        with torch.enable_grad():
-            # Forward pass로 예측값 생성
-            outputs, _ = model(inp, caps)
-            
-            # 실제 정답과 비교하는 CrossEntropyLoss 계산
-            # outputs: [batch, seq_len, vocab_size]
-            # caps: [batch, seq_len]
-            targets = caps[:, 1:]  # <start> 토큰 제거
-            outputs = outputs[:, :-1, :]  # 마지막 토큰 제거
-            
-            # 실제 의미있는 손실 계산
-            loss = criterion(outputs.reshape(-1, vocab_size), targets.reshape(-1))
-        
-        # Backward pass - 1차 미분 (Gradient)
-        loss.backward(retain_graph=True)
-        
-        # Fisher Information 누적: F = E[g ⊗ g]
-        for param in layer.parameters():
-            if param.grad is not None:
-                if importance is None:
-                    # Fisher Information: g^2 (gradient의 제곱) - 더 안정적인 근사
-                    importance = param.grad.data ** 2
-                else:
-                    importance += param.grad.data ** 2
-        
-        model.zero_grad()
-    
-    # 평균 중요도 (안정성을 위해 정규화)
-    if importance is not None:
-        importance = importance / num_samples
-        # 수치 안정성을 위해 매우 작은 값은 clip
-        importance = torch.clamp(importance, min=1e-8)
-    
-    model.eval()  # 평가 모드로 복귀
-    return importance
-
-def compute_channel_importance_hessian(weight, pruning_rate, dim=1, hessian_importance=None):
-    """Hessian 기반 채널 중요도 계산
-    
-    Args:
-        weight: 가중치 행렬
-        pruning_rate: 프루닝 비율
-        dim: 채널 차원 (1=입력 채널, 0=출력 채널)
-        hessian_importance: Hessian 기반 중요도 (선택)
-    
-    Returns:
-        mask: 제거할 채널을 False로 표시
-    """
-    if hessian_importance is not None:
-        # Hessian 기반: 손실에 미치는 영향도 (2차 정보) 사용
-        # Hessian * weight^2 형태로 중요도 계산 (2차 Taylor 전개)
-        if dim == 1:
-            channel_importance = (hessian_importance * (weight ** 2)).sum(dim=0)
-        else:
-            channel_importance = (hessian_importance * (weight ** 2)).sum(dim=1)
-    else:
-        # L2 norm 기반 (기존 방식)
-        if dim == 1:
-            channel_importance = torch.norm(weight, p=2, dim=0)
-        else:
-            channel_importance = torch.norm(weight, p=2, dim=1)
-    
-    # 중요도가 낮은 채널 선택
-    num_to_prune = int(pruning_rate * channel_importance.numel())
-    if num_to_prune == 0:
-        return torch.ones(channel_importance.numel(), dtype=torch.bool, device=weight.device)
-    
-    _, indices = torch.sort(channel_importance)
-    mask = torch.ones(channel_importance.numel(), dtype=torch.bool, device=weight.device)
-    mask[indices[:num_to_prune]] = False  # 중요도 낮은 채널 제거
-    
-    return mask
 
 def apply_structured_pruning_physical(model, pruning_rate, img_tensor=None, captions_batch=None, wm=None, rwm=None, device=None, use_hessian=True):
     """Structured Pruning 적용 (Hessian 기반 - GRU 포함 실제 30% 감소)
@@ -595,7 +361,8 @@ def run_pruning_benchmark(pruned_model, label, img_tensor, wm, rwm, ref_caption,
         pruned_model, wm, 
         img_tensor=img_tensor, wm=wm, rwm=rwm,
         ref_caption=ref_caption, baseline_params=baseline_params,
-        epochs=10, label=label.replace(" ", "_").replace("%", "pct")
+        epochs=FINETUNE_EPOCHS, label=label.replace(" ", "_").replace("%", "pct"),
+        learning_rate=LEARNING_RATE
     )
     fine_tuned_model.to(device)
     
@@ -606,7 +373,6 @@ def run_pruning_benchmark(pruned_model, label, img_tensor, wm, rwm, ref_caption,
     
     del pruned_model, fine_tuned_model
     gc.collect()
-
 
 def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None, baseline_params=None):
     print(f"\n[{precision_name}] 벤치마크 시작...")
@@ -622,74 +388,14 @@ def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None, 
             print(f"⚠️ Warm-up 실패: {e}")
             return None
     
-    # 속도 및 메모리 측정 (추론 과정만)
-    latencies = []
-    time_per_tokens = []  # 토큰당 추론 시간
-    memory_usages = []  # 각 추론의 메모리 사용량
+    # benchmark_utils를 사용한 시간 및 메모리 측정
+    inference_metrics = measure_inference_time(model, inp, num_runs=NUM_RUNS, warmup=5)
     
-    # CUDA 메모리 측정 준비
-    if device.type == 'cuda':
-        torch.cuda.reset_peak_memory_stats()
-        torch.cuda.empty_cache()
+    latencies = [inference_metrics['mean_ms']] * NUM_RUNS  # 평균값 사용
+    memory_usages = [get_peak_memory_mb()] * NUM_RUNS  # 평균 메모리 사용
     
-    # ⚠️ CRITICAL: GC를 루프 밖으로 이동 - 시간 측정 왜곡 방지
-    # gc.collect()는 무거운 작업이므로 루프 밖에서 한 번만 실행
-    gc.collect()
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-    
-    for i in range(NUM_RUNS):
-        
-        # 메모리 측정 준비 (시간 측정 전)
-        if device.type == 'cuda': 
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()  # 이전 작업 완료 대기
-            torch.cuda.reset_peak_memory_stats()  # 피크 메모리 통계 초기화
-            mem_before = torch.cuda.memory_allocated() / 1024 / 1024  # MB
-        else:
-            mem_before = get_peak_memory_mb()
-        
-        # 추론 시간 측정 시작
-        if device.type == 'cuda':
-            torch.cuda.synchronize()  # 추론 전 동기화 (이전 작업 완료 보장)
-        
-        start = time.time()
-        
-        # 추론 실행
-        with torch.no_grad():
-            gen_seq = model.generate(inp, wm, rwm, 20)
-        
-        # CUDA의 경우 비동기 실행 완료 대기 (추론 시간에 포함)
-        if device.type == 'cuda': 
-            torch.cuda.synchronize()
-        
-        # 추론 시간 측정 종료
-        inference_time = (time.time() - start) * 1000  # ms
-        
-        # 생성된 토큰 길이 계산 (이미 gen_seq가 생성됨)
-        token_length = len([w for w in gen_seq if w not in ['<start>', '<end>', '<pad>', '<unk>']])
-        if token_length == 0:
-            token_length = 1  # 0으로 나누기 방지
-        
-        # 토큰당 평균 추론 시간 계산
-        time_per_token = inference_time / token_length
-        
-        latencies.append(inference_time)
-        time_per_tokens.append(time_per_token)
-        
-        # 메모리 측정 (시간 측정 후)
-        if device.type == 'cuda': 
-            # 실제 사용된 메모리 (피크 메모리 사용)
-            mem_used = torch.cuda.max_memory_allocated() / 1024 / 1024  # MB
-        else:
-            # CPU/MPS: 추론 후 메모리
-            mem_after = get_peak_memory_mb()
-            mem_used = max(0, mem_after - mem_before)  # 차이만 계산
-        
-        memory_usages.append(mem_used)
-        
-        if (i + 1) % 10 == 0:
-            print(f"   진행: {i+1}/{NUM_RUNS}")
+    print(f"   ⏱️ 평균 추론 시간: {inference_metrics['mean_ms']:.2f} ± {inference_metrics['std_ms']:.2f} ms")
+    print(f"   🧠 메모리 사용량: {get_peak_memory_mb():.2f} MB")
     
     # METEOR 점수 계산 (10개 이미지로 측정)
     meteor_scores = []
@@ -759,43 +465,25 @@ def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None, 
     avg_meteor = np.mean(meteor_scores) if meteor_scores else None
     
     # 결과 정리
-    avg_time = np.mean(latencies)
-    std_time = np.std(latencies)
-    avg_time_per_token = np.mean(time_per_tokens)  # 토큰당 평균 추론 시간
+    avg_time = inference_metrics['mean_ms']
+    std_time = inference_metrics['std_ms']
     
-    # Dense format 크기 (메모리상 크기)
-    size_mb_dense = get_model_size_mb(model, sparse=False)
-    # Sparse format 크기 (실제 저장 크기)
-    size_mb_sparse = get_sparse_model_size_mb(model)
+    # benchmark_utils 사용: 모델 크기 계산
+    size_mb_dense = calculate_model_size_mb(model, model_type='dense')
+    size_mb_sparse = calculate_model_size_mb(model, model_type='sparse')
+    sparsity = calculate_sparsity(model)
     
     # 추론 과정에서의 평균 메모리 사용량
     memory_usage = np.mean(memory_usages) if memory_usages else 0.0
     total_params, trainable_params = count_parameters(model)
     nonzero_params, _ = count_nonzero_parameters(model)
     
-    # Sparsity 계산: Magnitude (구조 미변경) vs Structured (구조 변경) 구분
-    # Magnitude Pruning: 가중치 희소성 = 0인 가중치의 비율
-    # Structured Pruning: 구조 희소성 = 총 파라미터 감소율
-    weight_sparsity = 1.0 - (nonzero_params / total_params) if total_params > 0 else 0.0
-    
-    if baseline_params is not None and baseline_params > 0:
-        structural_sparsity = 1.0 - (total_params / baseline_params)
-        # 구조가 변경된 경우 (파라미터가 감소한 경우) = Structured
-        if total_params < baseline_params:
-            sparsity = structural_sparsity
-        # 구조가 변경되지 않은 경우 (파라미터가 같은 경우) = Magnitude
-        else:
-            sparsity = weight_sparsity
-    else:
-        # Baseline이 없으면 가중치 희소성 사용
-        sparsity = weight_sparsity
-    
     print(f"   ⏱️ 평균 시간: {avg_time:.2f} ± {std_time:.2f} ms")
     print(f"   💾 모델 크기 (Dense): {size_mb_dense:.2f} MB")
     print(f"   💾 모델 크기 (Sparse): {size_mb_sparse:.2f} MB")
     print(f"   📉 크기 감소율: {(1 - size_mb_sparse/size_mb_dense)*100:.2f}%")
     print(f"   📊 총 파라미터: {total_params:,} (0이 아닌: {nonzero_params:,})")
-    print(f"   ✂️ Sparsity: {sparsity*100:.2f}%")
+    print(f"   ✂️ Sparsity: {sparsity:.2f}%")
     print(f"   🧠 메모리 사용량: {memory_usage:.5f} MB")
     if avg_meteor is not None:
         print(f"   ⭐ METEOR: {avg_meteor:.4f}")
@@ -806,9 +494,8 @@ def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None, 
         'precision': precision_name,
         'mean_time_ms': avg_time,
         'std_time_ms': std_time,
-        'min_time_ms': np.min(latencies),
-        'max_time_ms': np.max(latencies),
-        'mean_time_per_token_ms': avg_time_per_token,  # 토큰당 평균 추론 시간
+        'min_time_ms': inference_metrics['min_ms'],
+        'max_time_ms': inference_metrics['max_ms'],
         'model_size_mb': size_mb_sparse,  # Sparse format 크기 사용
         'model_size_mb_dense': size_mb_dense,  # Dense format 크기도 저장
         'memory_usage_mb': memory_usage,
@@ -1007,55 +694,27 @@ def plot_finetune_comparison(results, baseline_result):
 # ============================================================================
 # 파인 튜닝 함수
 # ============================================================================
-def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None, ref_caption=None, baseline_params=None, epochs=2, label="pruned_model"):
+def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None, ref_caption=None, baseline_params=None, epochs=2, label="pruned_model", learning_rate=5e-5):
     """파인튜닝 수행 + Epoch마다 벤치마크 및 모델 저장 + 체크포인트 로드"""
     print(f"\n   🔄 파인 튜닝 시작 ({epochs} epoch)...")
-    print(device)
     
-    # 🔄 체크포인트 확인 및 로드
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    start_epoch = 0
-    
-    # 기존 체크포인트 확인
-    checkpoint_files = [f for f in os.listdir(OUTPUT_DIR) if f.startswith(label) and f.endswith('.pth')]
-    if checkpoint_files:
-        # 가장 최신 체크포인트 찾기
-        epoch_numbers = []
-        for f in checkpoint_files:
-            try:
-                # "pruned_model_epoch_X.pth" 형식에서 X 추출
-                epoch_num = int(f.split('epoch_')[-1].replace('.pth', ''))
-                epoch_numbers.append((epoch_num, f))
-            except ValueError:
-                continue
-        
-        if epoch_numbers:
-            epoch_numbers.sort()
-            latest_epoch, latest_file = epoch_numbers[-1]
-            checkpoint_path = os.path.join(OUTPUT_DIR, latest_file)
-            
-            print(f"   📂 체크포인트 발견: {latest_file} (Epoch {latest_epoch})")
-            try:
-                model.load_state_dict(torch.load(checkpoint_path, map_location=device))
-                start_epoch = latest_epoch  # 다음 epoch부터 시작
-                print(f"   ✅ 체크포인트 로드 완료. Epoch {start_epoch+1}부터 재개합니다.")
-            except Exception as e:
-                print(f"   ⚠️ 체크포인트 로드 실패: {e}")
-                print(f"   🔄 처음부터 시작합니다.")
-                start_epoch = 0
+    # 체크포인트 로드
+    checkpoint, start_epoch, checkpoint_path = load_checkpoint(label, device)
+    optimizer_state = checkpoint.get('optimizer_state_dict') if checkpoint else None
+    if checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print_checkpoint_info(checkpoint, start_epoch)
+        print(f"   ✅ Epoch {start_epoch+1}부터 재개합니다.")
     else:
-        print(f"   ℹ️ 기존 체크포인트가 없습니다. 처음부터 시작합니다.")
+        print(f"   ℹ️ 처음부터 시작합니다.")
     
-    # ⚠️ CRITICAL: Encoder(CNN) Freeze - ImageNet 학습된 특징 보존
-    # Encoder를 학습하면 Catastrophic Forgetting 또는 극심한 Overfitting 발생
-    if hasattr(model, 'encoder'):
-        for param in model.encoder.parameters():
-            param.requires_grad = False
-        print(f"   🔒 Encoder Freeze: CNN 파라미터 학습 금지")
+    # 학습 설정
+    optimizer, criterion = setup_training(model, learning_rate, device)
+    restore_optimizer(optimizer, optimizer_state)
     
-    # 학습 데이터셋 준비
+    # 학습 데이터셋 준비 (학습/검증 분할)
     try:
-        dataset = CaptionDataset(
+        full_dataset = CaptionDataset(
             images_dir=TEST_IMAGE_DIR,
             captions_file=CAPTIONS_FILE,
             transform=transform,
@@ -1063,40 +722,52 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None, 
             max_len=50
         )
         
-        if len(dataset) == 0:
+        if len(full_dataset) == 0:
             print("   ⚠️ 학습 데이터가 없어 파인 튜닝을 건너뜁니다.")
             return model
         
-        # 적응형 배치 사이즈: 데이터가 적으면 더 작은 배치 사이즈 사용 (업데이트 횟수 증가)
-        dataset_size = len(dataset)
-        if dataset_size < 1000:
-            batch_size = 32  # 작은 데이터셋: 더 많은 업데이트
-            print(f"   📊 배치 사이즈 조정: {dataset_size}개 샘플 → batch_size=32 (빈번한 업데이트)")
-        else:
-            batch_size = 64  # 중간 크기: 균형잡힌 업데이트
-            print(f"   📊 배치 사이즈: batch_size=64")
+        # 학습/검증 데이터셋 분할
+        val_size = int(len(full_dataset) * VALIDATION_SPLIT)
+        train_size = len(full_dataset) - val_size
+        train_dataset, val_dataset = torch.utils.data.random_split(
+            full_dataset, [train_size, val_size],
+            generator=torch.Generator().manual_seed(42)
+        )
         
-        dataloader = DataLoader(
-            dataset,
+        print(f"   📊 데이터셋 분할: 학습({train_size}개) / 검증({val_size}개)")
+        
+        # 적응형 배치 사이즈
+        batch_size = 32 if train_size < 1000 else 64
+        
+        train_dataloader = DataLoader(
+            train_dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=0,
             pin_memory=False
         )
         
-        print(f"   📚 학습 데이터: {len(dataset)}개 샘플, {len(dataloader)}개 배치")
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=0,
+            pin_memory=False
+        )
+        
+        print(f"   📚 학습 배치: {len(train_dataloader)}개, 검증 배치: {len(val_dataloader)}개")
         
         # 모델을 학습 모드로 전환
         model.train()
         model.to(device)
         
-        # Optimizer 및 Loss 설정
-        criterion = nn.CrossEntropyLoss(ignore_index=0)
-        
-        # ⚠️ CRITICAL: Decoder만 학습 (Encoder는 requires_grad=False)
-        # filter()로 requires_grad=True인 파라미터만 Optimizer에 전달
-        trainable_params = filter(lambda p: p.requires_grad, model.parameters())
-        optimizer = torch.optim.Adam(trainable_params, lr=5e-5)
+        # 체크포인트에서 Optimizer State 복구
+        if optimizer_state is not None:
+            try:
+                optimizer.load_state_dict(optimizer_state)
+                print(f"   ✅ Optimizer State 복구 완료 (Learning Rate, Momentum 등 복원)")
+            except Exception as e:
+                print(f"   ⚠️ Optimizer State 복구 실패: {e}")
         
         # 학습할 파라미터 개수 출력
         trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -1104,13 +775,17 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None, 
         print(f"   📊 학습 대상 파라미터: {trainable_count:,} / {total_count:,} ({100*trainable_count/total_count:.1f}%)")
         vocab_size = len(word_map)
         
+        # Early Stopping 설정
+        best_meteor_score = -float('inf')
+        patience_counter = 0
+        
         # 파인튜닝 진행 (체크포인트 이후부터 시작)
         for epoch in range(start_epoch, epochs):
             print(f"   🏋️ Epoch {epoch+1}/{epochs}")
             total_loss = 0
             num_batches = 0
             
-            for batch_idx, (imgs, caps) in enumerate(dataloader):
+            for batch_idx, (imgs, caps) in enumerate(train_dataloader):
                 imgs = imgs.to(device)
                 caps = caps.to(device)
                 
@@ -1132,14 +807,41 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None, 
                 
                 # 10개 배치마다 진행상황 출력
                 if (batch_idx + 1) % 10 == 0:
-                    print(f"      배치 {batch_idx + 1}/{len(dataloader)}, Loss: {total_loss / num_batches:.4f}")
+                    print(f"      배치 {batch_idx + 1}/{len(train_dataloader)}, Loss: {total_loss / num_batches:.4f}")
             
-            # 🎯 Epoch 끝 - 벤치마크 실행
+            # 🎯 Epoch 끝 - 학습 Loss 계산
             if num_batches > 0:
                 avg_loss = total_loss / num_batches
-                print(f"   ✅ Epoch {epoch+1} 완료 (평균 Loss: {avg_loss:.4f})")
+                print(f"   ✅ Epoch {epoch+1} 완료 (학습 Loss: {avg_loss:.4f})")
+            
+            # 🔍 검증 데이터셋 평가
+            print(f"   📊 검증 데이터 평가 중...")
+            model.eval()
+            val_loss = 0
+            val_batches = 0
+            
+            with torch.no_grad():
+                for val_imgs, val_caps in val_dataloader:
+                    val_imgs = val_imgs.to(device)
+                    val_caps = val_caps.to(device)
+                    
+                    try:
+                        val_outputs, _ = model(val_imgs, val_caps)
+                        val_targets = val_caps[:, 1:]
+                        val_outputs = val_outputs[:, :val_targets.shape[1], :]
+                        val_loss_batch = criterion(val_outputs.reshape(-1, vocab_size), val_targets.reshape(-1))
+                        val_loss += val_loss_batch.item()
+                        val_batches += 1
+                    except Exception as e:
+                        continue
+            
+            avg_val_loss = val_loss / val_batches if val_batches > 0 else float('inf')
+            print(f"      검증 Loss: {avg_val_loss:.4f}")
+            
+            model.train()  # 다시 학습 모드
             
             # 벤치마크 실행 (img_tensor, wm, rwm이 제공된 경우)
+            current_meteor_score = None
             if img_tensor is not None and wm is not None and rwm is not None:
                 print(f"\n   📊 Epoch {epoch+1} 벤치마크 시작...")
                 model.eval()
@@ -1158,13 +860,31 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None, 
                     print(f"      💾 모델 크기: {benchmark_result['model_size_mb']:.2f} MB")
                     print(f"      🧠 메모리: {benchmark_result['memory_usage_mb']:.2f} MB")
                     if benchmark_result.get('meteor_score'):
-                        print(f"      ⭐ METEOR: {benchmark_result['meteor_score']:.4f}")
+                        current_meteor_score = benchmark_result['meteor_score']
+                        print(f"      ⭐ METEOR: {current_meteor_score:.4f}")
+            
+            # 🛑 Early Stopping 체크 (METEOR 점수 기반)
+            if current_meteor_score is not None:
+                if current_meteor_score > best_meteor_score:
+                    best_meteor_score = current_meteor_score
+                    patience_counter = 0
+                    best_model_state = model.state_dict().copy()
+                    print(f"   🎉 새로운 최고 METEOR 점수: {best_meteor_score:.4f} (Patience: {patience_counter}/{EARLY_STOPPING_PATIENCE})")
+                else:
+                    patience_counter += 1
+                    print(f"   ⚠️ METEOR 점수 미개선: {current_meteor_score:.4f} (Patience: {patience_counter}/{EARLY_STOPPING_PATIENCE})")
+                    
+                    if patience_counter >= EARLY_STOPPING_PATIENCE:
+                        print(f"\n   🛑 Early Stopping 발동! Epoch {epoch+1}에서 학습 종료")
+                        print(f"      최고 METEOR 점수: {best_meteor_score:.4f}")
+                        # 최고 성능 모델 로드
+                        model.load_state_dict(best_model_state)
+                        break
                 
-                # 모델 저장
-                os.makedirs(OUTPUT_DIR, exist_ok=True)
-                model_save_path = os.path.join(OUTPUT_DIR, f"pruned_model_epoch_{epoch+1}.pth")
-                torch.save(model.state_dict(), model_save_path)
-                print(f"      💾 모델 저장: {model_save_path}")
+                # 체크포인트 저장 (함수 사용)
+                save_checkpoint(model, optimizer, epoch, label, 
+                               avg_loss if num_batches > 0 else None,
+                               avg_val_loss, current_meteor_score)
         
         model.eval()
         return model
