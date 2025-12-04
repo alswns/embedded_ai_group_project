@@ -49,7 +49,7 @@ else:
 
 LEARNING_RATE = 4e-4  # 학습률 (너무 크면 발산함)
 BATCH_SIZE = 64 if device.type != "cpu" else 16  # GPU/MPS 사용 시 더 큰 배치
-EPOCHS = 100          # 전체 반복 횟수
+EPOCHS = 400          # 전체 반복 횟수
 MAX_CAPTION_LEN = 50  # 최대 캡션 길이
 MIN_WORD_FREQ = 2     # 단어장에 포함될 최소 빈도
 ENCODER_FINE_TUNING = True
