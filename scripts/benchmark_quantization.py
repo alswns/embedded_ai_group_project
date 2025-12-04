@@ -1,8 +1,5 @@
 """
-Quantization 벤치마크 스크립트 (최종 수정됨)
-- 수정사항 1: IndexError 방지 (files[567] -> files[0])
-- 수정사항 2: QAT 학습 시 Mixed Precision 비활성화 (정확도 향상)
-- 수정사항 3: 불필요한 Wrapper 클래스 삭제
+Quantization 벤치마크 스크립트
 """
 import torch
 import torch.nn as nn
@@ -10,73 +7,35 @@ from torch.quantization import quantize_fx
 import numpy as np
 import os
 import time
-import psutil
+import platform
 import matplotlib.pyplot as plt
-import matplotlib
 from copy import deepcopy
 import gc
-from collections import defaultdict
-from PIL import Image
-from torchvision import transforms
-import platform
 import warnings
-import sys # 추가됨
 
 warnings.filterwarnings('ignore')
 
-# -------------------------------------------------------------------------
-# [중요] 모델 import 경로 확인
-# -------------------------------------------------------------------------
-try:
-    from src.muti_modal_model.model import MobileNetCaptioningModel
-except ImportError:
-    print("⚠️ 모델 클래스를 import할 수 없습니다. 경로를 확인해주세요.")
-    # 더미 클래스
-    class MobileNetCaptioningModel(nn.Module):
-        def __init__(self, vocab_size, embed_dim):
-            super().__init__()
-            self.emb = nn.Embedding(vocab_size, embed_dim)
-            self.gru = nn.GRU(embed_dim, 512)
-            self.fc = nn.Linear(512, vocab_size)
-        def generate(self, img, wm, rwm, max_len):
-            return ["<start>", "a", "test", "caption", "<end>"]
-
-# NLTK 설정
-try:
-    from nltk.translate.meteor_score import meteor_score
-    from nltk.tokenize import word_tokenize
-    import nltk
-    nltk.download('punkt', quiet=True)
-    nltk.download('wordnet', quiet=True)
-    METEOR_AVAILABLE = True
-except ImportError:
-    print("⚠️ nltk가 설치되지 않았습니다. METEOR 점수 계산 불가.")
-    METEOR_AVAILABLE = False
-
-# [삭제됨] QuantizedEncoderWrapper는 FX 모드에서 필요 없습니다.
+# 공통 유틸리티 import
+from src.utils import (
+    setup_device,
+    setup_matplotlib,
+    get_image_transform,
+    count_parameters,
+    get_model_size_mb,
+    get_peak_memory_mb,
+    calculate_meteor,
+    load_test_data,
+    prepare_calibration_dataset,
+    load_base_model,
+    TEST_IMAGE_DIR,
+    CAPTIONS_FILE,
+)
 
 # ============================================================================
 # 설정
 # ============================================================================
-matplotlib.use('Agg')
+setup_matplotlib()
 
-# 한글 폰트 설정
-os_name = platform.system()
-if os_name == 'Windows':
-    plt.rcParams['font.family'] = 'Malgun Gothic'
-    plt.rcParams['axes.unicode_minus'] = False 
-elif os_name == 'Darwin': 
-    plt.rcParams['font.family'] = 'AppleGothic'
-    plt.rcParams['axes.unicode_minus'] = False
-elif os_name == 'Linux':
-    plt.rcParams['font.family'] = 'NanumGothic'
-    plt.rcParams['axes.unicode_minus'] = False
-else:
-    plt.rcParams['axes.unicode_minus'] = False
-
-MODEL_PATH = "models/lightweight_captioning_model.pth"
-TEST_IMAGE_DIR = "assets/images"
-CAPTIONS_FILE = "assets/captions.txt"
 OUTPUT_DIR = "benchmark_results"
 NUM_RUNS = 50
 
@@ -85,140 +44,10 @@ USE_QAT = True
 QAT_EPOCHS = 20
 
 # 디바이스 선택
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-    device = torch.device("mps")
-print(f"🚀 실행 디바이스: {device}")
+device = setup_device()
 
 # 이미지 전처리
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
-# ============================================================================
-# 유틸리티 함수
-# ============================================================================
-def count_parameters(model):
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return total_params, trainable_params
-
-def get_model_size_mb(model):
-    param_size = 0
-    buffer_size = 0
-    for param in model.parameters():
-        param_size += param.nelement() * param.element_size()
-    for buffer in model.buffers():
-        buffer_size += buffer.nelement() * buffer.element_size()
-    return (param_size + buffer_size) / 1024 / 1024
-
-def get_peak_memory_mb():
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
-
-def load_data():
-    """테스트 이미지와 참조 캡션 로드"""
-    img_tensor = None
-    filename = None
-    
-    if os.path.exists(TEST_IMAGE_DIR):
-        files = [f for f in os.listdir(TEST_IMAGE_DIR) if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
-        if files:
-            import random
-            # [수정됨] 하드코딩된 인덱스 제거 (IndexError 방지)
-            # 파일이 있으면 첫 번째 파일 사용, 없으면 더미 사용
-            filename = files[2] 
-            img_path = os.path.join(TEST_IMAGE_DIR, filename)
-            try:
-                img = Image.open(img_path).convert('RGB')
-                img_tensor = transform(img).unsqueeze(0).to(device)
-                print(f"📸 테스트 이미지: {filename}")
-            except Exception as e:
-                print(f"⚠️ 이미지 로드 중 에러: {e}")
-
-    if img_tensor is None:
-        print("⚠️ 이미지를 찾을 수 없어 더미 데이터를 사용합니다.")
-        img_tensor = torch.randn(1, 3, 224, 224).to(device)
-        filename = "dummy"
-
-    ref_caption = None
-    if os.path.exists(CAPTIONS_FILE) and filename != "dummy":
-        with open(CAPTIONS_FILE, 'r', encoding='utf-8') as f:
-            for line in f:
-                if filename in line:
-                    parts = line.split(',', 1) if ',' in line else line.split('\t', 1)
-                    if len(parts) > 1:
-                        if parts[0].strip() == filename:
-                            ref_caption = parts[1].strip()
-                            print(f"📝 참조 캡션: {ref_caption}")
-                            break
-                        else:
-                            continue
-    
-    return img_tensor, ref_caption
-
-def calculate_meteor(gen_list, ref_str):
-    if not METEOR_AVAILABLE or not ref_str:
-        return None
-    try:
-        gen_str = ' '.join([w for w in gen_list if w not in ['<start>', '<end>', '<pad>', '<unk>']])
-        return meteor_score([word_tokenize(ref_str.lower())], word_tokenize(gen_str.lower()))
-    except:
-        return None
-
-# ============================================================================
-# 모델 로드 및 변환 함수
-# ============================================================================
-def load_base_model():
-    if not os.path.exists(MODEL_PATH):
-        print(f"❌ 모델 파일 없음: {MODEL_PATH}")
-        return MobileNetCaptioningModel(vocab_size=5000, embed_dim=300).to(device), {}, {}
-
-    checkpoint = torch.load(MODEL_PATH, map_location=device)
-    vocab_size = checkpoint.get('vocab_size', 5000)
-    
-    model = MobileNetCaptioningModel(vocab_size=vocab_size, embed_dim=300).to(device)
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    
-    model.eval()
-    return model, checkpoint.get('word_map', {}), checkpoint.get('rev_word_map', {})
-
-def prepare_calibration_dataset(word_map, num_samples=100, max_len=20):
-    """정적 양자화를 위한 Calibration 데이터셋 준비"""
-    calibration_images = []
-    
-    if not os.path.exists(TEST_IMAGE_DIR):
-        for _ in range(num_samples):
-            calibration_images.append(torch.randn(1, 3, 224, 224))
-        return calibration_images, None
-    
-    image_files = [f for f in os.listdir(TEST_IMAGE_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-    if not image_files:
-        for _ in range(num_samples):
-            calibration_images.append(torch.randn(1, 3, 224, 224))
-        return calibration_images, None
-    
-    import random
-    selected_files = random.sample(image_files, min(num_samples, len(image_files)))
-    
-    print(f"   📊 Calibration 데이터셋 준비 중: {len(selected_files)}개 이미지")
-    
-    for filename in selected_files:
-        try:
-            img_path = os.path.join(TEST_IMAGE_DIR, filename)
-            img = Image.open(img_path).convert('RGB')
-            img_tensor = transform(img).unsqueeze(0) 
-            calibration_images.append(img_tensor)
-        except Exception:
-            continue
-            
-    while len(calibration_images) < num_samples:
-        calibration_images.append(torch.randn(1, 3, 224, 224))
-    
-    return calibration_images[:num_samples], None
+transform = get_image_transform()
 
 def convert_to_int8(model, word_map=None, use_qat=False, qat_epochs=2):
     if use_qat:
@@ -250,7 +79,7 @@ def convert_to_int8_static(model, word_map=None):
         return torch.quantization.quantize_dynamic(model_cpu, {nn.Linear}, dtype=torch.qint8)
 
     print("   📊 Calibration 데이터 준비 중...")
-    cal_images, _ = prepare_calibration_dataset(word_map, num_samples=20)
+    cal_images, _ = prepare_calibration_dataset(word_map, num_samples=1000, transform=transform)
     example_input = cal_images[0]
 
     try:
@@ -301,7 +130,7 @@ def convert_to_int8_qat(model, word_map=None, qat_epochs=2):
     if word_map is None:
         return torch.quantization.quantize_dynamic(model_cpu, {nn.Linear}, dtype=torch.qint8)
     
-    cal_images, _ = prepare_calibration_dataset(word_map, num_samples=20)
+    cal_images, _ = prepare_calibration_dataset(word_map, num_samples=1000)
     example_input = cal_images[0]
     
     # [설정] QAT Config
@@ -387,7 +216,7 @@ def convert_to_int8_qat(model, word_map=None, qat_epochs=2):
         epoch_loss = 0
         steps = 0
         for i, (imgs, caps) in enumerate(dataloader):
-            if i > 50: break # 시간 절약을 위해 epoch당 50배치만
+            # if i > 50: break # 시간 절약을 위해 epoch당 50배치만
             
             imgs = imgs.to(qat_device)
             caps = caps.to(qat_device)
@@ -690,8 +519,8 @@ def plot_benchmark(results):
 # ============================================================================
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    base_model, wm, rwm = load_base_model()
-    img_tensor, ref_caption = load_data()
+    base_model, wm, rwm = load_base_model(device=device)
+    img_tensor, ref_caption = load_test_data(device=device, transform=transform)
     
     results = []
     

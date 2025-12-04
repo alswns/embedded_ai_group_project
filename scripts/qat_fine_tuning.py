@@ -8,273 +8,103 @@ from torch.quantization import quantize_fx
 import numpy as np
 import os
 import time
-import psutil
+import platform
 import matplotlib.pyplot as plt
-import matplotlib
 from copy import deepcopy
 import gc
-from collections import defaultdict
-from PIL import Image
-from torchvision import transforms
-import platform
 import warnings
 
 warnings.filterwarnings('ignore')
 
-# -------------------------------------------------------------------------
-# 모델 import
-# -------------------------------------------------------------------------
-try:
-    from src.muti_modal_model.model import MobileNetCaptioningModel
-except ImportError:
-    print("⚠️ 모델 클래스를 import할 수 없습니다. 경로를 확인해주세요.")
-    class MobileNetCaptioningModel(nn.Module):
-        def __init__(self, vocab_size, embed_dim):
-            super().__init__()
-            self.emb = nn.Embedding(vocab_size, embed_dim)
-            self.gru = nn.GRU(embed_dim, 512)
-            self.fc = nn.Linear(512, vocab_size)
-        def generate(self, img, wm, rwm, max_len):
-            return ["<start>", "a", "test", "caption", "<end>"]
-
-# NLTK 및 METEOR 설정
-try:
-    from nltk.translate.meteor_score import meteor_score
-    from nltk.tokenize import word_tokenize
-    import nltk
-    nltk.download('punkt', quiet=True)
-    nltk.download('wordnet', quiet=True)
-    METEOR_AVAILABLE = True
-except ImportError:
-    print("⚠️ nltk가 설치되지 않았습니다. METEOR 점수 계산 불가.")
-    METEOR_AVAILABLE = False
+# 공통 유틸리티 import
+from src.utils import (
+    setup_device,
+    setup_matplotlib,
+    get_image_transform,
+    count_parameters,
+    get_model_size_mb,
+    get_peak_memory_mb,
+    calculate_meteor,
+    CaptionDataset,
+    load_test_data,
+    prepare_calibration_dataset,
+    load_base_model,
+    TEST_IMAGE_DIR,
+    CAPTIONS_FILE,
+)
 
 # ============================================================================
 # 설정
 # ============================================================================
-matplotlib.use('Agg')  # GUI 없이 백그라운드에서 실행
+setup_matplotlib()
 
-# 한글 폰트 설정
-os_name = platform.system()
-if os_name == 'Windows':
-    plt.rcParams['font.family'] = 'Malgun Gothic'
-    plt.rcParams['axes.unicode_minus'] = False
-elif os_name == 'Darwin':  # macOS
-    plt.rcParams['font.family'] = 'AppleGothic'
-    plt.rcParams['axes.unicode_minus'] = False
-elif os_name == 'Linux':
-    plt.rcParams['font.family'] = 'NanumGothic'
-    plt.rcParams['axes.unicode_minus'] = False
-else:
-    plt.rcParams['axes.unicode_minus'] = False
-
-MODEL_PATH = "models/lightweight_captioning_model.pth"
-TEST_IMAGE_DIR = "assets/images"
-CAPTIONS_FILE = "assets/captions.txt"
 OUTPUT_DIR = "qat_results"
+QAT_CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
+QAT_CHECKPOINT_PATH = os.path.join(QAT_CHECKPOINT_DIR, "qat_checkpoint.pth")
 NUM_RUNS = 50
 
 # QAT 설정
 QAT_EPOCHS = 30  # QAT 학습 epoch 수 (더 많은 학습으로 더 나은 결과)
 
 # 디바이스 선택
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-    device = torch.device("mps")
-print(f"🚀 실행 디바이스: {device}")
+device = setup_device()
 
 # 이미지 전처리
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
+transform = get_image_transform()
 
 # ============================================================================
-# 유틸리티 함수
+# 데이터 로드 (공통 모듈 사용)
 # ============================================================================
-def count_parameters(model):
-    """모델 파라미터 개수 계산"""
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    return total_params, trainable_params
+# load_base_model, load_test_data, prepare_calibration_dataset는 utils에서 import
 
-def get_model_size_mb(model):
-    """모델 파라미터 + 버퍼 크기 계산 (MB)"""
-    param_size = 0
-    buffer_size = 0
-    for param in model.parameters():
-        param_size += param.nelement() * param.element_size()
-    for buffer in model.buffers():
-        buffer_size += buffer.nelement() * buffer.element_size()
-    return (param_size + buffer_size) / 1024 / 1024
+# ============================================================================
+# 체크포인트 관리
+# ============================================================================
+def save_qat_checkpoint(model, optimizer, epoch, loss_history, word_map, checkpoint_path):
+    """QAT 체크포인트 저장"""
+    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+    
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss_history': loss_history,
+        'word_map': word_map,
+        'qat_epochs': QAT_EPOCHS,
+    }
+    
+    torch.save(checkpoint, checkpoint_path)
+    print(f"   💾 체크포인트 저장: {checkpoint_path} (Epoch {epoch})")
 
-def get_peak_memory_mb():
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
-
-def calculate_meteor(generated_caption, reference_caption):
-    """METEOR 점수 계산"""
-    if not METEOR_AVAILABLE:
-        return None
+def load_qat_checkpoint(checkpoint_path, model, optimizer=None):
+    """QAT 체크포인트 로드"""
+    if not os.path.exists(checkpoint_path):
+        return None, None, 0, []
+    
+    print(f"   📂 체크포인트 로드 중: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    start_epoch = checkpoint.get('epoch', 0)
+    loss_history = checkpoint.get('loss_history', [])
+    word_map = checkpoint.get('word_map', None)
+    
+    # 모델 상태 로드
     try:
-        # 특수 토큰 제거
-        gen_words = [w for w in generated_caption if w not in ['<start>', '<end>', '<pad>', '<unk>']]
-        ref_words = word_tokenize(reference_caption.lower())
-        gen_words_str = ' '.join(gen_words)
-        if not gen_words_str:
-            return None
-        gen_tokens = word_tokenize(gen_words_str.lower())
-        score = meteor_score([ref_words], gen_tokens)
-        return score
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        print(f"   ✅ 모델 상태 로드 완료 (Epoch {start_epoch})")
     except Exception as e:
-        return None
-
-# ============================================================================
-# 데이터 로드
-# ============================================================================
-def load_base_model():
-    """학습된 모델 로드"""
-    print("📂 모델 로드 중...")
-    if not os.path.exists(MODEL_PATH):
-        raise FileNotFoundError(f"모델 파일을 찾을 수 없습니다: {MODEL_PATH}")
+        print(f"   ⚠️ 모델 상태 로드 실패: {e}")
+        return None, word_map, 0, []
     
-    checkpoint = torch.load(MODEL_PATH, map_location=device)
-    
-    # 체크포인트에서 정보 추출
-    if isinstance(checkpoint, dict):
-        if 'model_state_dict' in checkpoint:
-            model_state = checkpoint['model_state_dict']
-            vocab_size = checkpoint.get('vocab_size', 1000)
-            word_map = checkpoint.get('word_map', {})
-            rev_word_map = checkpoint.get('rev_word_map', {})
-        else:
-            model_state = checkpoint
-            vocab_size = 1000
-            word_map = {}
-            rev_word_map = {}
-    else:
-        model_state = checkpoint
-        vocab_size = 1000
-        word_map = {}
-        rev_word_map = {}
-    
-    # 모델 생성
-    embed_dim = 300  # GloVe 사용 시
-    model = MobileNetCaptioningModel(vocab_size=vocab_size, embed_dim=embed_dim)
-    model.load_state_dict(model_state)
-    model.eval()
-    model.to(device)
-    
-    print(f"✅ 모델 로드 완료 (Vocab Size: {vocab_size})")
-    return model, word_map, rev_word_map
-
-def load_data():
-    """테스트 이미지와 참조 캡션 로드"""
-    img_tensor = None
-    filename = None
-    ref_caption = None
-    
-    if os.path.exists(TEST_IMAGE_DIR):
-        files = [f for f in os.listdir(TEST_IMAGE_DIR) if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
-        if files:
-            import random
-            filename = random.choice(files)
-            img_path = os.path.join(TEST_IMAGE_DIR, filename)
-            img = Image.open(img_path).convert('RGB')
-            img_tensor = transform(img).unsqueeze(0).to(device)
-            print(f"📸 테스트 이미지: {filename}")
-    
-    if img_tensor is None:
-        print("⚠️ 이미지를 찾을 수 없어 더미 데이터를 사용합니다.")
-        img_tensor = torch.randn(1, 3, 224, 224).to(device)
-        filename = "dummy"
-        ref_caption = "a test image"
-    else:
-        # 참조 캡션 로드
-        if os.path.exists(CAPTIONS_FILE) and filename != "dummy":
-            with open(CAPTIONS_FILE, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                for line in lines:
-                    if ',' in line:
-                        parts = line.split(',', 1)
-                        if len(parts) == 2 and parts[0].strip() == filename:
-                            ref_caption = parts[1].strip()
-                            print(f"📝 참조 캡션: {ref_caption}")
-                            break
-    
-    return img_tensor, ref_caption
-
-# ============================================================================
-# Calibration 데이터셋 준비
-# ============================================================================
-def prepare_calibration_dataset(word_map, num_samples=100):
-    """정적 양자화를 위한 Calibration 데이터셋 준비"""
-    calibration_images = []
-    calibration_captions = []
-    
-    if not os.path.exists(TEST_IMAGE_DIR):
-        print(f"   ⚠️ 이미지 디렉토리가 없어 더미 데이터를 사용합니다.")
-        for _ in range(num_samples):
-            dummy_img = torch.randn(1, 3, 224, 224)
-            calibration_images.append(dummy_img)
-            dummy_cap = torch.LongTensor([
-                word_map.get('<start>', 1),
-                word_map.get('<pad>', 0),
-                word_map.get('<end>', 2)
-            ])
-            calibration_captions.append(dummy_cap)
-        return calibration_images, calibration_captions
-    
-    image_files = [f for f in os.listdir(TEST_IMAGE_DIR) 
-                   if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-    
-    if not image_files:
-        print(f"   ⚠️ 이미지가 없어 더미 데이터를 사용합니다.")
-        for _ in range(num_samples):
-            dummy_img = torch.randn(1, 3, 224, 224)
-            calibration_images.append(dummy_img)
-            dummy_cap = torch.LongTensor([
-                word_map.get('<start>', 1),
-                word_map.get('<pad>', 0),
-                word_map.get('<end>', 2)
-            ])
-            calibration_captions.append(dummy_cap)
-        return calibration_images, calibration_captions
-    
-    import random
-    selected_files = random.sample(image_files, min(num_samples, len(image_files)))
-    
-    print(f"   📊 Calibration 데이터셋 준비 중: {len(selected_files)}개 이미지")
-    
-    for filename in selected_files:
+    # Optimizer 상태 로드
+    if optimizer is not None and 'optimizer_state_dict' in checkpoint:
         try:
-            img_path = os.path.join(TEST_IMAGE_DIR, filename)
-            img = Image.open(img_path).convert('RGB')
-            img_tensor = transform(img).unsqueeze(0)
-            calibration_images.append(img_tensor)
-            
-            dummy_cap = torch.LongTensor([
-                word_map.get('<start>', 1),
-                word_map.get('<pad>', 0),
-                word_map.get('<end>', 2)
-            ])
-            calibration_captions.append(dummy_cap)
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            print(f"   ✅ Optimizer 상태 로드 완료")
         except Exception as e:
-            print(f"   ⚠️ 이미지 로드 실패 ({filename}): {e}")
-            continue
+            print(f"   ⚠️ Optimizer 상태 로드 실패: {e}")
     
-    while len(calibration_images) < num_samples:
-        dummy_img = torch.randn(1, 3, 224, 224)
-        calibration_images.append(dummy_img)
-        dummy_cap = torch.LongTensor([
-            word_map.get('<start>', 1),
-            word_map.get('<pad>', 0),
-            word_map.get('<end>', 2)
-        ])
-        calibration_captions.append(dummy_cap)
-    
-    return calibration_images[:num_samples], calibration_captions[:num_samples]
+    return model, word_map, start_epoch, loss_history
 
 # ============================================================================
 # Quantization 함수
@@ -302,7 +132,7 @@ def convert_to_int8_static(model, word_map=None):
         return torch.quantization.quantize_dynamic(model_cpu, {nn.Linear}, dtype=torch.qint8)
 
     print("   📊 Calibration 데이터 준비 중...")
-    cal_images, _ = prepare_calibration_dataset(word_map, num_samples=20)
+    cal_images, _ = prepare_calibration_dataset(word_map, num_samples=1000, transform=transform)
     example_input = cal_images[0]
 
     try:
@@ -359,97 +189,41 @@ def convert_to_int8_qat(model, word_map=None, qat_epochs=3):
         print("   ⚠️ word_map이 없어 Dynamic Quantization으로 fallback")
         return torch.quantization.quantize_dynamic(model_cpu, {nn.Linear}, dtype=torch.qint8)
 
-    print("   📊 Calibration 데이터 준비 중...")
-    cal_images, _ = prepare_calibration_dataset(word_map, num_samples=20)
-    example_input = cal_images[0]
+    # 체크포인트 확인
+    checkpoint_exists = os.path.exists(QAT_CHECKPOINT_PATH)
     
-    qconfig_dict = {"": torch.quantization.get_default_qat_qconfig(backend)}
-    
-    print("   🔧 인코더 QAT 준비 (Prepare QAT FX)...")
-    model_cpu.encoder = quantize_fx.prepare_qat_fx(
-        model_cpu.encoder,
-        qconfig_dict,
-        example_input
-    )
-    
-    print("   🔄 Calibration 진행 중 (초기 양자화 파라미터 설정)...")
-    model_cpu.encoder.eval()
-    with torch.no_grad():
-        for img in cal_images:
-            model_cpu.encoder(img)
-    
-    print(f"\n   [QAT Fine-tuning 시작]")
-    model_cpu.train()
+    if not checkpoint_exists:
+        # 체크포인트가 없으면 양자화 준비 수행
+        print("   📊 Calibration 데이터 준비 중...")
+        cal_images, _ = prepare_calibration_dataset(word_map, num_samples=1000, transform=transform)
+        example_input = cal_images[0]
+        
+        qconfig_dict = {"": torch.quantization.get_default_qat_qconfig(backend)}
+        
+        print("   🔧 인코더 QAT 준비 (Prepare QAT FX)...")
+        model_cpu.encoder = quantize_fx.prepare_qat_fx(
+            model_cpu.encoder,
+            qconfig_dict,
+            example_input
+        )
+        
+        print("   🔄 Calibration 진행 중 (초기 양자화 파라미터 설정)...")
+        model_cpu.encoder.eval()
+        with torch.no_grad():
+            for img in cal_images:
+                model_cpu.encoder(img)
+        
+        print(f"\n   [QAT Fine-tuning 시작]")
+        model_cpu.train()
+    else:
+        print("   📂 체크포인트 발견 - 양자화 준비 단계 건너뜀")
+        model_cpu.train()
     
     # 학습 데이터셋 준비
     try:
-        from torch.utils.data import DataLoader, Dataset
+        from torch.utils.data import DataLoader
         
         MAX_CAPTION_LEN = 50
-        
-        def encode_caption(caption, word_map, max_len=MAX_CAPTION_LEN):
-            tokens = caption.lower().split()
-            encoded = [word_map.get('<start>', 1)]
-            for token in tokens[:max_len-2]:
-                encoded.append(word_map.get(token, word_map.get('<unk>', 3)))
-            encoded.append(word_map.get('<end>', 2))
-            while len(encoded) < max_len:
-                encoded.append(word_map.get('<pad>', 0))
-            return torch.LongTensor(encoded[:max_len])
-        
-        class CaptionDataset(Dataset):
-            def __init__(self, images_dir, captions_file, transform=None, word_map=None, max_len=MAX_CAPTION_LEN):
-                self.images_dir = images_dir
-                self.transform = transform
-                self.word_map = word_map
-                self.max_len = max_len
-                
-                available_images = set([f for f in os.listdir(images_dir) 
-                                       if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp'))])
-                
-                image_to_captions = defaultdict(list)
-                if os.path.exists(captions_file):
-                    with open(captions_file, 'r', encoding='utf-8') as f:
-                        lines = f.readlines()
-                        first_line = lines[0].strip() if lines else ""
-                        start_idx = 1 if first_line.lower().startswith('image') or first_line.lower().startswith('filename') else 0
-                        
-                        for line in lines[start_idx:]:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            if ',' in line:
-                                parts = line.split(',', 1)
-                                if len(parts) == 2:
-                                    img_name = parts[0].strip()
-                                    caption = parts[1].strip()
-                                    if img_name and caption and img_name in available_images:
-                                        image_to_captions[img_name].append(caption)
-                
-                self.image_caption_pairs = []
-                for img_name, captions in image_to_captions.items():
-                    if captions:
-                        for caption in captions:
-                            self.image_caption_pairs.append((img_name, caption))
-            
-            def __getitem__(self, idx):
-                img_name, caption_text = self.image_caption_pairs[idx]
-                img_path = os.path.join(self.images_dir, img_name)
-                try:
-                    image = Image.open(img_path).convert('RGB')
-                    if self.transform:
-                        image = self.transform(image)
-                except Exception:
-                    image = torch.zeros(3, 224, 224)
-                
-                if self.word_map:
-                    caption = encode_caption(caption_text, self.word_map, self.max_len)
-                else:
-                    caption = torch.zeros(self.max_len, dtype=torch.long)
-                return image, caption
-            
-            def __len__(self):
-                return len(self.image_caption_pairs)
         
         dataset = CaptionDataset(
             images_dir=TEST_IMAGE_DIR,
@@ -465,7 +239,7 @@ def convert_to_int8_qat(model, word_map=None, qat_epochs=3):
         
         dataloader = DataLoader(
             dataset, 
-            batch_size=4, 
+            batch_size=64, 
             shuffle=True, 
             num_workers=0,
             pin_memory=False
@@ -496,37 +270,73 @@ def convert_to_int8_qat(model, word_map=None, qat_epochs=3):
         optimizer = torch.optim.Adam(model_cpu.parameters(), lr=1e-4)
         vocab_size = len(word_map)
         
-        for epoch in range(qat_epochs):
-            epoch_loss = 0
-            num_batches = 0
+        # 체크포인트 로드 시도
+        start_epoch = 0
+        loss_history = []
+        
+        if checkpoint_exists:
+            loaded_model, loaded_word_map, loaded_epoch, loaded_loss_history = load_qat_checkpoint(
+                QAT_CHECKPOINT_PATH, model_cpu, optimizer
+            )
             
-            for batch_idx, (imgs, caps) in enumerate(dataloader):
-                if batch_idx >= 30:  # 더 많은 배치로 학습
-                    break
+            if loaded_model is not None:
+                model_cpu = loaded_model
+                if loaded_word_map:
+                    word_map = loaded_word_map
+                start_epoch = loaded_epoch
+                loss_history = loaded_loss_history
                 
-                imgs = imgs.to(qat_device)
-                caps = caps.to(qat_device)
+                if start_epoch >= qat_epochs:
+                    print(f"   ✅ 학습이 이미 완료되었습니다 (Epoch {start_epoch}/{qat_epochs})")
+                    print("   🔄 양자화 변환 진행...")
+                else:
+                    print(f"   🔄 체크포인트에서 이어서 학습: Epoch {start_epoch + 1}/{qat_epochs}부터 시작")
+            else:
+                print(f"   ⚠️ 체크포인트 로드 실패 - 새로운 학습 시작")
+        else:
+            print(f"   🆕 새로운 학습 시작: {qat_epochs} epochs")
+        
+        # 학습 루프 (학습이 완료되지 않은 경우에만)
+        if start_epoch < qat_epochs:
+            for epoch in range(start_epoch, qat_epochs):
+                epoch_loss = 0
+                num_batches = 0
                 
-                optimizer.zero_grad()
-                
-                try:
-                    # QAT는 CPU에서만 수행 (양자화 연산이 MPS에서 지원되지 않음)
-                    outputs, alphas = model_cpu(imgs, caps)
-                    targets = caps[:, 1:]
-                    outputs = outputs[:, :targets.shape[1], :]
-                    loss = criterion(outputs.reshape(-1, vocab_size), targets.reshape(-1))
-                    loss.backward()
-                    optimizer.step()
+                for batch_idx, (imgs, caps) in enumerate(dataloader):
+                    # if batch_idx >= 30:  # 더 많은 배치로 학습
+                    #     break
                     
-                    epoch_loss += loss.item()
-                    num_batches += 1
-                except Exception as e:
-                    print(f"   ⚠️ 배치 {batch_idx} 학습 실패: {e}")
-                    continue
-            
-            if num_batches > 0:
-                avg_loss = epoch_loss / num_batches
-                print(f"      Epoch {epoch+1}/{qat_epochs}, Loss: {avg_loss:.4f}")
+                    imgs = imgs.to(qat_device)
+                    caps = caps.to(qat_device)
+                    
+                    optimizer.zero_grad()
+                    
+                    try:
+                        # QAT는 CPU에서만 수행 (양자화 연산이 MPS에서 지원되지 않음)
+                        outputs, alphas = model_cpu(imgs, caps)
+                        targets = caps[:, 1:]
+                        outputs = outputs[:, :targets.shape[1], :]
+                        loss = criterion(outputs.reshape(-1, vocab_size), targets.reshape(-1))
+                        loss.backward()
+                        optimizer.step()
+                        
+                        epoch_loss += loss.item()
+                        num_batches += 1
+                    except Exception as e:
+                        print(f"   ⚠️ 배치 {batch_idx} 학습 실패: {e}")
+                        continue
+                
+                if num_batches > 0:
+                    avg_loss = epoch_loss / num_batches
+                    loss_history.append(avg_loss)
+                    print(f"      Epoch {epoch+1}/{qat_epochs}, Loss: {avg_loss:.4f}")
+                    
+                    # 체크포인트 저장 (매 epoch마다)
+                    save_qat_checkpoint(
+                        model_cpu, optimizer, epoch + 1, loss_history, word_map, QAT_CHECKPOINT_PATH
+                    )
+        else:
+            print(f"   ⏭️ 학습 완료 - 양자화 변환으로 진행")
         
         print("   🔄 CPU로 이동 중 (Quantization 준비)...")
         model_cpu = model_cpu.cpu()
@@ -542,6 +352,23 @@ def convert_to_int8_qat(model, word_map=None, qat_epochs=3):
             dtype=torch.qint8
         )
         quantized_model.eval()
+        
+        # 최종 양자화 모델 저장
+        final_model_path = os.path.join(QAT_CHECKPOINT_DIR, "qat_final_model.pth")
+        os.makedirs(os.path.dirname(final_model_path), exist_ok=True)
+        torch.save({
+            'model_state_dict': quantized_model.state_dict(),
+            'word_map': word_map,
+            'loss_history': loss_history,
+            'qat_epochs': qat_epochs,
+            'final_epoch': qat_epochs,
+        }, final_model_path)
+        print(f"   💾 최종 양자화 모델 저장: {final_model_path}")
+        
+        # 최종 체크포인트 저장 (학습 완료 표시)
+        save_qat_checkpoint(
+            model_cpu, optimizer, qat_epochs, loss_history, word_map, QAT_CHECKPOINT_PATH
+        )
         
         print("   ✅ QAT 완료!")
         return quantized_model
@@ -742,8 +569,8 @@ def main():
     print("="*70)
     
     # 1. 모델 및 데이터 로드
-    base_model, wm, rwm = load_base_model()
-    img_tensor, ref_caption = load_data()
+    base_model, wm, rwm = load_base_model(device=device)
+    img_tensor, ref_caption = load_test_data(device=device, transform=transform)
     
     # 2. Int8 Static Quantization (Before)
     print("\n" + "="*70)
