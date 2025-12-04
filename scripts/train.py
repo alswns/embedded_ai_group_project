@@ -377,10 +377,11 @@ def train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scal
     return total_loss / len(dataloader)
 
 # --- [2.5] 검증 함수 정의 ---
-def validate_epoch(model, val_dataloader, criterion, epoch, vocab_size):
-    """검증 데이터셋에서 모델 평가"""
+def validate_epoch(model, val_dataloader, criterion, epoch, vocab_size, word_map=None, rev_word_map=None):
+    """검증 데이터셋에서 모델 평가 (Loss + METEOR 점수)"""
     model.eval()
     total_val_loss = 0
+    meteor_scores = []
     
     with torch.no_grad():
         for i, (imgs, caps) in enumerate(val_dataloader):
@@ -398,13 +399,56 @@ def validate_epoch(model, val_dataloader, criterion, epoch, vocab_size):
             loss = criterion(outputs.reshape(-1, vocab_size), targets.reshape(-1))
             total_val_loss += loss.item()
             
+            # METEOR 점수 계산 (word_map이 제공된 경우)
+            if word_map is not None and rev_word_map is not None:
+                try:
+                    # 배치의 각 샘플에 대해 캡션 생성
+                    for j in range(imgs.shape[0]):
+                        img_single = imgs[j:j+1]
+                        cap_single = caps[j:j+1]
+                        
+                        # 캡션 생성
+                        generated_words = model.generate(img_single, word_map, rev_word_map, max_len=MAX_CAPTION_LEN)
+                        generated_caption = ' '.join([w for w in generated_words if w not in ['<start>', '<end>', '<pad>', '<unk>']])
+                        
+                        # 참조 캡션
+                        reference_cap = ' '.join([rev_word_map.get(int(idx), '<unk>') for idx in cap_single[0] if int(idx) > 0])
+                        reference_cap = reference_cap.replace('<start> ', '').replace(' <end>', '')
+                        
+                        # METEOR 계산
+                        meteor = 0.0
+                        if METEOR_AVAILABLE and meteor_score:
+                            try:
+                                reference = [reference_cap.lower().split()]
+                                hypothesis = generated_caption.lower().split()
+                                meteor = meteor_score(reference, hypothesis)
+                            except:
+                                # 단어 일치율로 대체
+                                ref_words = set(reference_cap.lower().split())
+                                gen_words = set(generated_caption.lower().split())
+                                common = ref_words & gen_words
+                                meteor = len(common) / len(ref_words) if len(ref_words) > 0 else 0.0
+                        else:
+                            # nltk가 없으면 단어 일치율
+                            ref_words = set(reference_cap.lower().split())
+                            gen_words = set(generated_caption.lower().split())
+                            common = ref_words & gen_words
+                            meteor = len(common) / len(ref_words) if len(ref_words) > 0 else 0.0
+                        
+                        meteor_scores.append(meteor)
+                except Exception as e:
+                    # METEOR 계산 실패 시 0.0 추가
+                    meteor_scores.append(0.0)
+            
             if i % 10 == 0:
                 print(f"  Validation Step [{i}/{len(val_dataloader)}], Loss: {loss.item():.4f}")
     
     avg_val_loss = total_val_loss / len(val_dataloader)
+    avg_meteor = sum(meteor_scores) / len(meteor_scores) if meteor_scores else 0.0
+    
     model.train()  # 다시 학습 모드로
     
-    return avg_val_loss
+    return avg_val_loss, avg_meteor
 
 
 def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_samples=5, start_idx=0):
@@ -687,20 +731,15 @@ def main():
         train_losses.append(avg_train_loss)
         print(f"✅ 학습 완료. 평균 Loss: {avg_train_loss:.4f}")
         
-        # 검증 에포크
+        # 검증 에포크 (Loss + METEOR 점수 계산)
         print(f"\n🔍 검증 시작...")
-        avg_val_loss = validate_epoch(model, val_dataloader, criterion, epoch, vocab_size)
+        avg_val_loss, avg_meteor = validate_epoch(
+            model, val_dataloader, criterion, epoch, vocab_size, 
+            word_map=word_map, rev_word_map=rev_word_map
+        )
         val_losses.append(avg_val_loss)
         print(f"✅ 검증 완료. 평균 Loss: {avg_val_loss:.4f}")
-        
-        # 검증 데이터셋 전체의 평균 METEOR 점수 계산
-        print(f"\n📸 검증 데이터셋 평가 (전체 METEOR):")
-        val_results = evaluate_multiple_samples(
-            model, val_dataset.dataset, word_map, rev_word_map
-        )
-        
-        # METEOR 점수 추출
-        avg_meteor = val_results.get('avg_meteor', 0.0) if val_results else 0.0
+        print(f"⭐ 평균 METEOR: {avg_meteor:.4f}")
         
         # 스케줄러 업데이트 (METEOR 점수 기반)
         scheduler.step(avg_meteor)
