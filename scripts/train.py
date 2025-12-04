@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from PIL import Image
@@ -10,7 +11,9 @@ import random
 import numpy as np
 from collections import Counter, defaultdict
 from src.muti_modal_model.model import MobileNetCaptioningModel
-
+import warnings
+from tqdm import tqdm
+warnings.filterwarnings("ignore")
 # METEOR 점수 계산을 위한 nltk
 try:
     from nltk.translate.meteor_score import meteor_score
@@ -44,7 +47,7 @@ else:
     device = torch.device("cpu")
     print("CPU 모드로 실행")
 
-LEARNING_RATE = 2e-4  # 학습률 (너무 크면 발산함)
+LEARNING_RATE = 4e-4  # 학습률 (너무 크면 발산함)
 BATCH_SIZE = 64 if device.type != "cpu" else 16  # GPU/MPS 사용 시 더 큰 배치
 EPOCHS = 100          # 전체 반복 횟수
 MAX_CAPTION_LEN = 50  # 최대 캡션 길이
@@ -300,8 +303,7 @@ class CaptionDataset(Dataset):
 def train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scaler=None, use_mixed_precision=False):
     model.train() # 학습 모드 설정
     total_loss = 0
-    
-    for i, (imgs, caps) in enumerate(dataloader):
+    for i, (imgs, caps) in enumerate(tqdm(dataloader, desc=f"Training Epoch {epoch+1}")):
         imgs = imgs.to(device, non_blocking=True)
         caps = caps.to(device, non_blocking=True)
         
@@ -370,11 +372,41 @@ def train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scal
         
         total_loss += loss.item()
         
-        if i % 10 == 0:
-            print(f"Epoch [{epoch+1}/{EPOCHS}], Step [{i}/{len(dataloader)}], Loss: {loss.item():.4f}")
+        # if i % 10 == 0:
+        #     print(f"Epoch [{epoch+1}/{EPOCHS}], Step [{i}/{len(dataloader)}], Loss: {loss.item():.4f}")
     return total_loss / len(dataloader)
 
-# --- [3] 여러 샘플로 캡션 생성 및 검증 출력 ---
+# --- [2.5] 검증 함수 정의 ---
+def validate_epoch(model, val_dataloader, criterion, epoch, vocab_size):
+    """검증 데이터셋에서 모델 평가"""
+    model.eval()
+    total_val_loss = 0
+    
+    with torch.no_grad():
+        for i, (imgs, caps) in enumerate(val_dataloader):
+            imgs = imgs.to(device, non_blocking=True)
+            caps = caps.to(device, non_blocking=True)
+            
+            # 모델 예측 (Forward)
+            outputs, alphas = model(imgs, caps)
+            
+            # 정답과 비교를 위한 차원 조절
+            targets = caps[:, 1:] 
+            outputs = outputs[:, :targets.shape[1], :]
+            
+            # 손실 계산
+            loss = criterion(outputs.reshape(-1, vocab_size), targets.reshape(-1))
+            total_val_loss += loss.item()
+            
+            if i % 10 == 0:
+                print(f"  Validation Step [{i}/{len(val_dataloader)}], Loss: {loss.item():.4f}")
+    
+    avg_val_loss = total_val_loss / len(val_dataloader)
+    model.train()  # 다시 학습 모드로
+    
+    return avg_val_loss
+
+
 def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_samples=5, start_idx=0):
     """여러 샘플 이미지로 캡션을 생성하고 METEOR 점수로 검증"""
     model.eval()
@@ -544,11 +576,38 @@ def main():
     if len(dataset) == 0:
         raise ValueError(f"데이터셋이 비어있습니다. {IMAGES_DIR} 폴더에 이미지가 있는지 확인하세요.")
     
-    # 최적화된 DataLoader 설정
-    dataloader = DataLoader(
+    # 검증 셋 분리 (80% 학습, 20% 검증)
+    val_split_ratio = 0.1
+    val_size = max(1, int(len(dataset) * val_split_ratio))
+    train_size = len(dataset) - val_size
+    
+    # 시드 고정으로 재현성 보장
+    torch.manual_seed(42)
+    train_dataset, val_dataset = torch.utils.data.random_split(
         dataset, 
+        [train_size, val_size]
+    )
+    
+    print(f"✅ 데이터셋 분할 완료:")
+    print(f"   • 학습 셋: {len(train_dataset)}개 샘플")
+    print(f"   • 검증 셋: {len(val_dataset)}개 샘플")
+    
+    # 최적화된 DataLoader 설정
+    train_dataloader = DataLoader(
+        train_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True, 
+        num_workers=NUM_WORKERS,
+        pin_memory=PIN_MEMORY,
+        persistent_workers=True if NUM_WORKERS > 0 else False,
+        prefetch_factor=2 if NUM_WORKERS > 0 else None
+    )
+    
+    # 검증 데이터 로더 (셔플 불필요)
+    val_dataloader = DataLoader(
+        val_dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=False, 
         num_workers=NUM_WORKERS,
         pin_memory=PIN_MEMORY,
         persistent_workers=True if NUM_WORKERS > 0 else False,
@@ -599,6 +658,15 @@ def main():
     # filter를 써서 requires_grad=True인 파라미터(디코더)만 업데이트 목록에 넣음
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=LEARNING_RATE)
     
+    # 스케줄러: 검증 손실 기반으로 학습률 동적 조정
+    scheduler = ReduceLROnPlateau(
+        optimizer, 
+        mode='min',           # 손실(min)이 기준 (손실이 낮을수록 좋음)
+        factor=0.66,          # 학습률을 0.66배 감소
+        patience=2,           # 2 에포크 동안 개선 없으면 학습률 감소
+        
+        min_lr=1e-6           # 최소 학습률
+    )
     # 6. 손실 함수 (Padding=0 무시)
     criterion = nn.CrossEntropyLoss(ignore_index=0)
     
@@ -617,23 +685,44 @@ def main():
             use_mixed_precision = False
     
     # 8. 학습 루프
-    print(f"학습 시작 (Encoder Frozen)... 총 {len(dataset)}개 샘플, {EPOCHS} 에포크")
+    print(f"학습 시작 (Encoder Frozen)... 총 {len(train_dataset)}개 샘플, {EPOCHS} 에포크")
     print(f"배치 크기: {BATCH_SIZE}, 디바이스: {device}, Mixed Precision: {use_mixed_precision}")
     
     # 검증 설정
-    VAL_NUM_SAMPLES = 5  # 검증에 사용할 샘플 수
-    val_start_idx = 0  # 검증 시작 인덱스 (매 epoch마다 변경 가능)
+    VAL_NUM_SAMPLES = min(5, len(val_dataset))  # 검증에 사용할 샘플 수
+    
+    # 학습 이력 추적
+    train_losses = []
+    val_losses = []
     
     # 체크포인트에서 이어서 학습하는 경우
     for epoch in range(start_epoch, EPOCHS):
-        avg_loss = train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scaler, use_mixed_precision)
-        print(f"=== Epoch {epoch+1}/{EPOCHS} 완료. 평균 Loss: {avg_loss:.4f} ===")
+        print(f"\n{'='*70}")
+        print(f"Epoch {epoch+1}/{EPOCHS} 시작")
+        print(f"{'='*70}")
         
-        # 여러 샘플로 검증 및 출력
+        # 학습 에포크
+        avg_train_loss = train_epoch(model, train_dataloader, criterion, optimizer, epoch, vocab_size, scaler, use_mixed_precision)
+        train_losses.append(avg_train_loss)
+        print(f"✅ 학습 완료. 평균 Loss: {avg_train_loss:.4f}")
+        
+        # 검증 에포크
+        print(f"\n🔍 검증 시작...")
+        avg_val_loss = validate_epoch(model, val_dataloader, criterion, epoch, vocab_size)
+        val_losses.append(avg_val_loss)
+        print(f"✅ 검증 완료. 평균 Loss: {avg_val_loss:.4f}")
+        
+        # 스케줄러 업데이트 (검증 손실 기반)
+        scheduler.step(avg_val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"📊 스케줄러 업데이트 - 현재 Learning Rate: {current_lr:.2e}")
+        
+        # 여러 샘플로 세부 검증 및 출력
+        print(f"\n📸 세부 검증 (METEOR 점수):")
         val_results = evaluate_multiple_samples(
-            model, dataset, word_map, rev_word_map, 
+            model, val_dataset.dataset, word_map, rev_word_map, 
             num_samples=VAL_NUM_SAMPLES, 
-            start_idx=(val_start_idx + epoch * VAL_NUM_SAMPLES) % len(dataset)
+            start_idx=(epoch * VAL_NUM_SAMPLES) % len(val_dataset)
         )
         
         # [옵션] 특정 Epoch 이후에 인코더도 같이 학습시키고 싶다면? (Fine-tuning)
@@ -645,21 +734,31 @@ def main():
             
             # 옵티마이저에 인코더 파라미터도 추가 (학습률은 더 낮게 잡는 게 좋음)
             optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE * 0.1)
+            scheduler = ReduceLROnPlateau(
+                optimizer, 
+                mode='min', 
+                factor=0.66, 
+                patience=2,
+            )
 
         # 주기적으로 모델 저장
-        save_path = os.path.join(MODEL_SAVE_DIR, f"lightweight_captioning_model_{epoch+1}_epoch.pth")
+        save_path = os.path.join(MODEL_SAVE_DIR, f"lightweight_captioning_model_{epoch+1}_epoch_loss_{avg_val_loss:.4f}.pth")
         try:
             torch.save({
                 'model_state_dict': model.state_dict(),
                 'word_map': word_map,
                 'rev_word_map': rev_word_map,
                 'vocab_size': vocab_size,
-                'epoch': epoch + 1
+                'epoch': epoch + 1,
+                'train_loss': avg_train_loss,
+                'val_loss': avg_val_loss
             }, save_path)
             print(f"✅ 모델 저장 완료: {save_path}")
         except Exception as e:
             print(f"❌ 모델 저장 실패: {e}")
             print(f"   저장 경로: {save_path}")
+        
+        print(f"{'='*70}\n")
     
     # 8. 최종 모델 저장
     final_save_path = os.path.join(MODEL_SAVE_DIR, "lightweight_captioning_model.pth")
@@ -669,9 +768,22 @@ def main():
             'word_map': word_map,
             'rev_word_map': rev_word_map,
             'vocab_size': vocab_size,
-            'epoch': EPOCHS
+            'epoch': EPOCHS,
+            'train_losses': train_losses,
+            'val_losses': val_losses
         }, final_save_path)
-        print(f"✅ 최종 모델 저장 완료: {final_save_path}")
+        print(f"\n✅ 최종 모델 저장 완료: {final_save_path}")
+        
+        # 학습 통계 출력
+        print(f"\n{'='*70}")
+        print(f"📊 학습 완료 통계:")
+        print(f"{'='*70}")
+        print(f"  • 최종 학습 손실: {train_losses[-1]:.4f}")
+        print(f"  • 최종 검증 손실: {val_losses[-1]:.4f}")
+        print(f"  • 최소 검증 손실: {min(val_losses):.4f} (Epoch {val_losses.index(min(val_losses))+1})")
+        print(f"  • 학습 손실 개선도: {((train_losses[0]-train_losses[-1])/train_losses[0]*100):.2f}%")
+        print(f"  • 검증 손실 개선도: {((val_losses[0]-val_losses[-1])/val_losses[0]*100):.2f}%")
+        print(f"{'='*70}\n")
     except Exception as e:
         print(f"❌ 최종 모델 저장 실패: {e}")
         print(f"   저장 경로: {final_save_path}")

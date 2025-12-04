@@ -75,7 +75,7 @@ OUTPUT_DIR = "qat_results"
 NUM_RUNS = 50
 
 # QAT 설정
-QAT_EPOCHS = 3  # QAT 학습 epoch 수 (더 많은 학습으로 더 나은 결과)
+QAT_EPOCHS = 30  # QAT 학습 epoch 수 (더 많은 학습으로 더 나은 결과)
 
 # 디바이스 선택
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -474,21 +474,21 @@ def convert_to_int8_qat(model, word_map=None, qat_epochs=3):
         print(f"   📚 학습 데이터: {len(dataset)}개 샘플")
         
         # Mixed Precision 설정
+        # QAT는 양자화 연산을 포함하므로 CPU에서만 안정적으로 동작
+        # MPS는 양자화 연산(aten::_fused_moving_avg_obs_fq_helper)을 지원하지 않음
         use_mixed_precision = False
         scaler = None
         qat_device = torch.device("cpu")
         
         if torch.cuda.is_available():
-            qat_device = torch.device("cuda")
-            model_cpu = model_cpu.to(qat_device)
-            use_mixed_precision = True
-            scaler = torch.cuda.amp.GradScaler()
-            print("   🚀 GPU 사용 - FP16 Mixed Precision 활성화")
-        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-            qat_device = torch.device("mps")
-            model_cpu = model_cpu.to(qat_device)
-            use_mixed_precision = True
-            print("   🚀 MPS 사용 - FP16 Mixed Precision 활성화")
+            # CUDA는 양자화를 지원하지만, 안정성을 위해 CPU 사용 권장
+            # 필요시 아래 주석을 해제하여 CUDA 사용 가능
+            # qat_device = torch.device("cuda")
+            # model_cpu = model_cpu.to(qat_device)
+            # use_mixed_precision = True
+            # scaler = torch.cuda.amp.GradScaler()
+            # print("   🚀 GPU 사용 - FP16 Mixed Precision 활성화")
+            print("   💻 CPU 사용 - QAT는 CPU에서 안정적으로 동작 (양자화 연산 지원)")
         else:
             print("   💻 CPU 사용 - FP32 학습")
         
@@ -510,33 +510,13 @@ def convert_to_int8_qat(model, word_map=None, qat_epochs=3):
                 optimizer.zero_grad()
                 
                 try:
-                    if use_mixed_precision:
-                        if qat_device.type == "cuda" and scaler is not None:
-                            with torch.cuda.amp.autocast():
-                                outputs, alphas = model_cpu(imgs, caps)
-                                targets = caps[:, 1:]
-                                outputs = outputs[:, :targets.shape[1], :]
-                                loss = criterion(outputs.reshape(-1, vocab_size), targets.reshape(-1))
-                            
-                            scaler.scale(loss).backward()
-                            scaler.step(optimizer)
-                            scaler.update()
-                        elif qat_device.type == "mps":
-                            with torch.amp.autocast(device_type="mps", dtype=torch.float16):
-                                outputs, alphas = model_cpu(imgs, caps)
-                                targets = caps[:, 1:]
-                                outputs = outputs[:, :targets.shape[1], :]
-                                loss = criterion(outputs.reshape(-1, vocab_size), targets.reshape(-1))
-                            
-                            loss.backward()
-                            optimizer.step()
-                    else:
-                        outputs, alphas = model_cpu(imgs, caps)
-                        targets = caps[:, 1:]
-                        outputs = outputs[:, :targets.shape[1], :]
-                        loss = criterion(outputs.reshape(-1, vocab_size), targets.reshape(-1))
-                        loss.backward()
-                        optimizer.step()
+                    # QAT는 CPU에서만 수행 (양자화 연산이 MPS에서 지원되지 않음)
+                    outputs, alphas = model_cpu(imgs, caps)
+                    targets = caps[:, 1:]
+                    outputs = outputs[:, :targets.shape[1], :]
+                    loss = criterion(outputs.reshape(-1, vocab_size), targets.reshape(-1))
+                    loss.backward()
+                    optimizer.step()
                     
                     epoch_loss += loss.item()
                     num_batches += 1

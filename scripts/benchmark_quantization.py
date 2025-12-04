@@ -82,7 +82,7 @@ NUM_RUNS = 50
 
 # QAT 설정
 USE_QAT = True 
-QAT_EPOCHS = 2 
+QAT_EPOCHS = 20
 
 # 디바이스 선택
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -380,7 +380,7 @@ def convert_to_int8_qat(model, word_map=None, qat_epochs=2):
         print(f"   💻 QAT 학습 디바이스: CPU (MPS 미지원으로 인한 강제 설정)")
     model_cpu = model_cpu.to(qat_device)
     
-    optimizer = torch.optim.Adam(model_cpu.parameters(), lr=1e-4) # 학습률 낮춤
+    optimizer = torch.optim.Adam(model_cpu.parameters(), lr=4e-4) # 학습률 낮춤
     criterion = nn.CrossEntropyLoss(ignore_index=0)
     
     for epoch in range(qat_epochs):
@@ -606,7 +606,7 @@ def plot_benchmark(results):
     # -------------------------------------------------------
     ax = axes[1, 0]
     bars = ax.bar(precisions, memory_usages, alpha=0.8, color=bar_colors)
-    ax.set_ylabel('메모리 증가량 (MB)', fontweight='bold')
+    ax.set_ylabel('메모리 사용량 (MB)', fontweight='bold')
     ax.set_title('메모리 사용량', fontweight='bold')
     ax.grid(axis='y', alpha=0.3)
     for bar, mem in zip(bars, memory_usages):
