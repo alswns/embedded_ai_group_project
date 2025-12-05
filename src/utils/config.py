@@ -17,6 +17,7 @@ def setup_device():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         device = torch.device("mps")
+    device=torch.device("cpu")
     print(f"🚀 실행 디바이스: {device}")
     return device
 

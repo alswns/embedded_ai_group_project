@@ -48,11 +48,6 @@ def get_model_size_mb(model, sparse=False):
     
     return (param_size + buffer_size) / 1024 / 1024
 
-def get_peak_memory_mb():
-    """현재 프로세스의 메모리 사용량 (MB)"""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
-
 def count_nonzero_parameters(model):
     """0이 아닌 파라미터 개수 계산 (프루닝 후)"""
     nonzero_params = 0

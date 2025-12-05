@@ -2,55 +2,58 @@
   "baseline_params": 7828597,
   "results": [
     {
-      "precision": "Original (Baseline)",
-      "mean_time_ms": 16.54041290283203,
-      "std_time_ms": 1.683623103212239,
-      "min_time_ms": 12.727022171020508,
-      "max_time_ms": 20.273923873901367,
-      "model_size_mb": 63.209028244018555,
-      "model_size_mb_dense": 29.91019058227539,
-      "memory_usage_mb": 0.018125,
-      "meteor_score": 0.41189276518239804,
+      "precision": "Original",
+      "mean_time_ms": 32.55189657211304,
+      "std_time_ms": 0.11664366682609212,
+      "model_size_mb": 29.863727569580078,
+      "meteor_score": 0.4533049496017339,
       "total_params": 7828597,
-      "trainable_params": 6901589,
-      "nonzero_params": 7828597,
-      "sparsity": 0.0,
-      "size_reduction": -111.32940651162504,
-      "example_caption": "a brown and black dog runs through a field"
+      "size_reduction": 0.0
     },
     {
-      "precision": "Structured-30%",
-      "mean_time_ms": 39.3938684463501,
-      "std_time_ms": 5.520696643772842,
-      "min_time_ms": 25.307893753051758,
-      "max_time_ms": 62.63232231140137,
-      "model_size_mb": 49.46907997131348,
-      "model_size_mb_dense": 23.039562225341797,
-      "memory_usage_mb": 0.0121875,
-      "meteor_score": 0.13137220011386808,
-      "total_params": 6027503,
-      "trainable_params": 5100495,
-      "nonzero_params": 6027323,
-      "sparsity": 0.2300660003318602,
-      "size_reduction": -114.71362818214135,
-      "example_caption": "a group of colorful mural of colorful mural of colorful balls of orange ball passes by two other players trying"
+      "precision": "Original Quantization",
+      "mean_time_ms": 32.57659673690796,
+      "std_time_ms": 0.11428901840923089,
+      "model_size_mb": 17.58135986328125,
+      "meteor_score": 0.45156599289517,
+      "total_params": 4608848,
+      "size_reduction": 41.12804631532316
     },
     {
-      "precision": "Structured-30% (Fine-tuned)",
-      "mean_time_ms": 31.36796474456787,
-      "std_time_ms": 3.700835254050136,
-      "min_time_ms": 20.395755767822266,
-      "max_time_ms": 34.8358154296875,
-      "model_size_mb": 49.47011756896973,
-      "model_size_mb_dense": 23.039562225341797,
-      "memory_usage_mb": 0.0,
-      "meteor_score": 0.33909958281197794,
+      "precision": "Pruning",
+      "mean_time_ms": 31.39176368713379,
+      "std_time_ms": 0.19746793239892943,
+      "model_size_mb": 21.639846801757812,
+      "meteor_score": 0.16278655183338014,
       "total_params": 6027503,
-      "trainable_params": 5100495,
-      "nonzero_params": 6027503,
-      "sparsity": 0.2300660003318602,
-      "size_reduction": -114.71813172976132,
-      "example_caption": "a dog jumps over the sand"
+      "size_reduction": 23.006600033186018
+    },
+    {
+      "precision": "Pruning Quantization",
+      "mean_time_ms": 32.68795609474182,
+      "std_time_ms": 0.12583741286499012,
+      "model_size_mb": 13.923778533935547,
+      "meteor_score": 0.1655731350499942,
+      "total_params": 3801272,
+      "size_reduction": 51.44376444463803
+    },
+    {
+      "precision": "Fine-tuned",
+      "mean_time_ms": 31.70408010482788,
+      "std_time_ms": 0.15516658598051603,
+      "model_size_mb": 21.640533447265625,
+      "meteor_score": 0.3244695773833496,
+      "total_params": 6027503,
+      "size_reduction": 23.006600033186018
+    },
+    {
+      "precision": "Pruning Fine-tuned Quantization",
+      "mean_time_ms": 33.522844314575195,
+      "std_time_ms": 0.3219079280521448,
+      "model_size_mb": 13.923713684082031,
+      "meteor_score": 0.32322525563720217,
+      "total_params": 3801272,
+      "size_reduction": 51.44376444463803
     }
   ]
 }

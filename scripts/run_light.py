@@ -78,15 +78,14 @@ transform = get_image_transform()
 # ============================================================================
 # 벤치마크 래퍼
 # ============================================================================
-def quantize_benchmark(model, img_tensor, wm, rwm, ref_caption,baseline_params, results,label):
+def quantize_benchmark(model, img_tensor, wm, rwm, ref_caption, baseline_params, results, label, val_dataloader=None):
     q_model = apply_dynamic_quantization(model)
     
     result = run_benchmark(q_model, img_tensor, wm, rwm, f"{label} Quantization",ref_caption=ref_caption,
     baseline_params=baseline_params,
     num_runs=NUM_RUNS,
     num_meteor_images=METEO_IMAGE_NUM,
-    test_image_dir=TEST_IMAGE_DIR,
-    captions_file=CAPTIONS_FILE,
+    val_dataloader=val_dataloader,
     transform=transform,
     calculate_meteor_fn=calculate_meteor)
 
@@ -95,7 +94,7 @@ def quantize_benchmark(model, img_tensor, wm, rwm, ref_caption,baseline_params, 
     del q_model
 
 def run_pruning_benchmark(pruned_model, label, img_tensor, wm, rwm, ref_caption, 
-                         baseline_params, device, results):
+                         baseline_params, device, results, val_dataloader=None):
     """프루닝된 모델 벤치마크 및 파인튜닝 실행"""
     pruned_model.to(device)
 
@@ -106,8 +105,7 @@ def run_pruning_benchmark(pruned_model, label, img_tensor, wm, rwm, ref_caption,
         baseline_params=baseline_params,
         num_runs=NUM_RUNS,
         num_meteor_images=METEO_IMAGE_NUM,
-        test_image_dir=TEST_IMAGE_DIR,
-        captions_file=CAPTIONS_FILE,
+        val_dataloader=val_dataloader,
         transform=transform,
         calculate_meteor_fn=calculate_meteor
     )
@@ -115,7 +113,7 @@ def run_pruning_benchmark(pruned_model, label, img_tensor, wm, rwm, ref_caption,
         results.append(result)
 
     if ENABLE_QUANTIZATION:
-        quantize_benchmark(pruned_model, img_tensor, wm, rwm, ref_caption, baseline_params, results, label)
+        quantize_benchmark(pruned_model, img_tensor, wm, rwm, ref_caption, baseline_params, results, label, val_dataloader=val_dataloader)
 
     if ENABLE_FINETUNING:
         fine_tuned_model = fine_tune_pruned_model(
@@ -129,22 +127,22 @@ def run_pruning_benchmark(pruned_model, label, img_tensor, wm, rwm, ref_caption,
         
         # 파인 튜닝 후 최종 벤치마크
         result_finetuned = run_benchmark(
-            fine_tuned_model, img_tensor, wm, rwm, f"Pruning Fine-tuned",
-            ref_caption=ref_caption,
-            baseline_params=baseline_params,
-            num_runs=NUM_RUNS,
-            num_meteor_images=METEO_IMAGE_NUM,
-            test_image_dir=TEST_IMAGE_DIR,
-            captions_file=CAPTIONS_FILE,
-            transform=transform,
-            calculate_meteor_fn=calculate_meteor
-        )
+                    fine_tuned_model, img_tensor, wm, rwm,
+                    f"Fine-tuned",
+                    ref_caption=ref_caption,
+                    baseline_params=baseline_params,
+                    num_runs=NUM_RUNS,
+                    num_meteor_images=METEO_IMAGE_NUM,
+                    val_dataloader=val_dataloader,
+                    transform=transform,
+                    calculate_meteor_fn=calculate_meteor
+                )
         if result_finetuned:
             results.append(result_finetuned)
 
         # 양자화 적용 (선택적)
             if ENABLE_QUANTIZATION:
-                quantize_benchmark(fine_tuned_model, img_tensor, wm, rwm, ref_caption, baseline_params, results, f"Pruning Fine-tuned")
+                quantize_benchmark(fine_tuned_model, img_tensor, wm, rwm, ref_caption, baseline_params, results, f"Pruning Fine-tuned", val_dataloader=val_dataloader)
         
             
         del fine_tuned_model
@@ -181,7 +179,7 @@ def getDataset(word_map):
 
 def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None, 
                           ref_caption=None, baseline_params=None, epochs=2, 
-                          label="pruned_model", learning_rate=5e-5):
+                          label="pruned_model", learning_rate=5e-5, val_dataloader=None):
     """파인튜닝 수행"""
     print(f"\n   🔄 파인 튜닝 시작 ({epochs} epoch)...")
     
@@ -296,8 +294,7 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                     baseline_params=baseline_params,
                     num_runs=NUM_RUNS,
                     num_meteor_images=METEO_IMAGE_NUM,
-                    test_image_dir=TEST_IMAGE_DIR,
-                    captions_file=CAPTIONS_FILE,
+                    val_dataloader=val_dataloader,
                     transform=transform,
                     calculate_meteor_fn=calculate_meteor
                 )
@@ -385,14 +382,22 @@ def plot_embedded_metrics(results):
     fig.suptitle('임베디드 환경 최적화 종합 분석', fontsize=16, fontweight='bold')
     
     # 1. 토큰당 추론 시간
-    axes[0, 0].bar(precisions, ms_per_token, alpha=0.8, color=colors)
+    bar=axes[0, 0].bar(precisions, ms_per_token, alpha=0.8, color=colors)
+    for rect, ms in zip(bar, ms_per_token):
+        height = rect.get_height()
+        axes[0, 0].text(rect.get_x() + rect.get_width() / 2.0, height, f'{ms:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
     axes[0, 0].set_ylabel('시간 (ms/token)')
     axes[0, 0].set_title('① 토큰당 추론 시간')
     axes[0, 0].tick_params(axis='x', rotation=45)
     axes[0, 0].grid(axis='y', alpha=0.3)
     
     # 2. 모델 크기
-    axes[0, 1].bar(precisions, model_sizes, alpha=0.8, color=colors)
+    bar=axes[0, 1].bar(precisions, model_sizes, alpha=0.8, color=colors)
+    for rect, size in zip(bar, model_sizes):
+        height = rect.get_height()
+        axes[0, 1].text(rect.get_x() + rect.get_width() / 2.0, height, f'{size:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
     axes[0, 1].set_ylabel('크기 (MB)')
     axes[0, 1].set_title('② 모델 크기')
     axes[0, 1].tick_params(axis='x', rotation=45)
@@ -402,9 +407,17 @@ def plot_embedded_metrics(results):
     x_pos = np.arange(len(precisions))
     width = 0.25
     total_memory_sum = [m + i for m, i in zip(model_memory, inference_memory)]
-    axes[0, 2].bar(x_pos - width, total_memory_sum, width, label='총합', alpha=0.8, color='green')
-    axes[0, 2].bar(x_pos, model_memory, width, label='모델', alpha=0.8, color='steelblue')
-    axes[0, 2].bar(x_pos + width, inference_memory, width, label='추론', alpha=0.8, color='coral')
+    bar1=axes[0, 2].bar(x_pos - width, total_memory_sum, width, label='총합', alpha=0.8, color='green')
+    bar2=axes[0, 2].bar(x_pos, model_memory, width, label='모델', alpha=0.8, color='steelblue')
+    bar3=axes[0, 2].bar(x_pos + width, inference_memory, width, label='추론', alpha=0.8, color='coral')
+    for rect, total, model_mem, inf_mem in zip(bar1, total_memory_sum, model_memory, inference_memory):
+        height = rect.get_height()
+        axes[0, 2].text(rect.get_x() + rect.get_width() / 2.0, height, f'{total:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
+        axes[0, 2].text(rect.get_x() - width + rect.get_width() / 2.0, model_mem, f'{model_mem:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
+        axes[0, 2].text(rect.get_x() + width + rect.get_width() / 2.0, inf_mem, f'{inf_mem:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
     axes[0, 2].set_ylabel('메모리 (MB)')
     axes[0, 2].set_title('③ 메모리 분리')
     axes[0, 2].set_xticks(x_pos)
@@ -413,28 +426,44 @@ def plot_embedded_metrics(results):
     axes[0, 2].grid(axis='y', alpha=0.3)
     
     # 4. 파라미터 수
-    axes[1, 0].bar(precisions, total_params, alpha=0.8, color=colors)
+    bar=axes[1, 0].bar(precisions, total_params, alpha=0.8, color=colors)
+    for rect, param in zip(bar, total_params):
+        height = rect.get_height()
+        axes[1, 0].text(rect.get_x() + rect.get_width() / 2.0, height, f'{param:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
     axes[1, 0].set_ylabel('파라미터 (M)')
     axes[1, 0].set_title('④ 총 파라미터 수')
     axes[1, 0].tick_params(axis='x', rotation=45)
     axes[1, 0].grid(axis='y', alpha=0.3)
     
     # 5. FLOPs 감소율
-    axes[1, 1].bar(precisions, flops_reduction, alpha=0.8, color=colors)
+    bar=axes[1, 1].bar(precisions, flops_reduction, alpha=0.8, color=colors)
+    for rect, reduction in zip(bar, flops_reduction):
+        height = rect.get_height()
+        axes[1, 1].text(rect.get_x() + rect.get_width() / 2.0, height, f'{reduction:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
     axes[1, 1].set_ylabel('감소율 (%)')
     axes[1, 1].set_title('⑤ FLOPs 감소율')
     axes[1, 1].tick_params(axis='x', rotation=45)
     axes[1, 1].grid(axis='y', alpha=0.3)
     
     # 6. METEOR 점수
-    axes[1, 2].bar(precisions, meteor_scores, alpha=0.8, color=colors)
+    bar=axes[1, 2].bar(precisions, meteor_scores, alpha=0.8, color=colors)
+    for rect, score in zip(bar, meteor_scores):
+        height = rect.get_height()
+        axes[1, 2].text(rect.get_x() + rect.get_width() / 2.0, height, f'{score:.2f}', 
+                        ha='center', va='bottom', fontsize=8)
     axes[1, 2].set_ylabel('METEOR')
     axes[1, 2].set_title('⑥ 캡션 품질 (METEOR)')
     axes[1, 2].tick_params(axis='x', rotation=45)
     axes[1, 2].grid(axis='y', alpha=0.3)
     
     # 7. 크기 감소율
-    axes[2, 0].bar(precisions, size_reduction, alpha=0.8, color=colors)
+    bar=axes[2, 0].bar(precisions, size_reduction, alpha=0.8, color=colors)
+    for rect, reduction in zip(bar, size_reduction):
+        height = rect.get_height()
+        axes[2, 0].text(rect.get_x() + rect.get_width() / 2.0, height, f'{reduction:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
     axes[2, 0].set_ylabel('감소율 (%)')
     axes[2, 0].set_title('⑦ 모델 크기 감소율')
     axes[2, 0].tick_params(axis='x', rotation=45)
@@ -443,20 +472,28 @@ def plot_embedded_metrics(results):
     # 8. 메모리-성능 트레이드오프
     total_memory = [m + i for m, i in zip(model_memory, inference_memory)]
     tradeoff = [mt * mm for mt, mm in zip(ms_per_token, total_memory)]
-    axes[2, 1].bar(precisions, tradeoff, alpha=0.8, color=colors)
+    bar=axes[2, 1].bar(precisions, tradeoff, alpha=0.8, color=colors)
+    for rect, tm in zip(bar, total_memory):
+        height = rect.get_height()
+        axes[2, 1].text(rect.get_x() + rect.get_width() / 2.0, height, f'{tm:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
     axes[2, 1].set_ylabel('트레이드오프 (ms*MB)')
     axes[2, 1].set_title('⑧ 메모리-성능 트레이드오프')
     axes[2, 1].tick_params(axis='x', rotation=45)
     axes[2, 1].grid(axis='y', alpha=0.3)
     
     # 9. 전체 문장 추론 시간
-    axes[2, 2].bar(precisions, mean_times, alpha=0.8, color=colors)
+    bar=axes[2, 2].bar(precisions, mean_times, alpha=0.8, color=colors)
+    for rect, time in zip(bar, mean_times):
+        height = rect.get_height()
+        axes[2, 2].text(rect.get_x() + rect.get_width() / 2.0, height, f'{time:.1f}', 
+                        ha='center', va='bottom', fontsize=8)
     axes[2, 2].set_ylabel('시간 (ms)')
     axes[2, 2].set_title('⑨ 전체 문장 추론 시간')
     axes[2, 2].tick_params(axis='x', rotation=45)
     axes[2, 2].grid(axis='y', alpha=0.3)
     
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     file_name = 'embedded_metrics_finetuned.png' if ENABLE_FINETUNING else 'embedded_metrics_comprehensive.png'
     plt.savefig(os.path.join(OUTPUT_DIR, file_name), dpi=300, bbox_inches='tight')
     print(f"✅ Plot 저장: {os.path.join(OUTPUT_DIR, file_name)}")
@@ -477,6 +514,8 @@ def main():
     base_model, wm, rwm = load_base_model(device=device)
     img_tensor, ref_caption = load_test_data(device=device, transform=transform)
     
+    # ✅ val_dataloader 생성 (METEOR 측정용, 데이터 오염 방지)
+    train_dataloader, val_dataloader = getDataset(wm)
     results = []
     
     # 2. 원본 모델 벤치마크 (Baseline)
@@ -488,8 +527,7 @@ def main():
         ref_caption=ref_caption,
         num_runs=NUM_RUNS,
         num_meteor_images=METEO_IMAGE_NUM,
-        test_image_dir=TEST_IMAGE_DIR,
-        captions_file=CAPTIONS_FILE,
+        val_dataloader=val_dataloader,
         transform=transform,
         calculate_meteor_fn=calculate_meteor
     )
@@ -501,7 +539,7 @@ def main():
     
     if ENABLE_FINETUNING:
         if ENABLE_QUANTIZATION:
-            quantize_benchmark(base_model, img_tensor, wm, rwm, ref_caption, baseline_params, results, "Original")
+            quantize_benchmark(base_model, img_tensor, wm, rwm, ref_caption, baseline_params, results, "Original", val_dataloader=val_dataloader)
 
         print("\n" + "="*70)
         print(f"=== Magnitude-10% & Structured-30% Pruning ===")
@@ -513,7 +551,7 @@ def main():
         pruned_model = apply_magnitude_pruning(pruned_model, 0.1)
         
         clear_memory(device)
-        run_pruning_benchmark(pruned_model, "Pruning", img_tensor, wm, rwm, ref_caption, baseline_params, device, results)
+        run_pruning_benchmark(pruned_model, "Pruning", img_tensor, wm, rwm, ref_caption, baseline_params, device, results, val_dataloader=val_dataloader)
     else:
         # 다양한 Pruning Rate로 테스트
         for pruning_rate in PRUNING_RATES:
@@ -524,7 +562,7 @@ def main():
                 try:
                     clear_memory(device)
                     pruned_model = apply_magnitude_pruning(base_model, pruning_rate)
-                    run_pruning_benchmark(pruned_model, f"Magnitude-{pruning_rate*100:.0f}%", img_tensor, wm, rwm, ref_caption, baseline_params, device, results)
+                    run_pruning_benchmark(pruned_model, f"Magnitude-{pruning_rate*100:.0f}%", img_tensor, wm, rwm, ref_caption, baseline_params, device, results, val_dataloader=val_dataloader)
                     del pruned_model
                     clear_memory(device)
                 except Exception as e:
@@ -544,7 +582,7 @@ def main():
                     img_tensor=img_tensor,
                     device=device, use_hessian=True
                 )
-                run_pruning_benchmark(pruned_model, f"Structured-{pruning_rate*100:.0f}%", img_tensor, wm, rwm, ref_caption, baseline_params, device, results)
+                run_pruning_benchmark(pruned_model, f"Structured-{pruning_rate*100:.0f}%", img_tensor, wm, rwm, ref_caption, baseline_params, device, results, val_dataloader=val_dataloader)
                 del pruned_model
                 clear_memory(device)
             except Exception as e:

@@ -7,33 +7,30 @@ from torchvision import transforms
 from PIL import Image
 import os
 import re
-import random
 import numpy as np
 from collections import Counter, defaultdict
 from src.muti_modal_model.model import MobileNetCaptioningModel
 import warnings
 from tqdm import tqdm
+
+# 유틸리티 import
+from src.utils import (
+    setup_device,
+    get_image_transform,
+    CaptionDataset as CaptionDatasetUtil,  # 유틸 버전 (필요시 사용)
+    calculate_meteor,
+    METEOR_AVAILABLE,
+)
+from src.utils.glove_utils import (
+    load_glove_embeddings_with_fallback,
+    create_embedding_matrix
+)
+from src.utils.finetune_utils import (
+    load_model_checkpoint,
+    save_checkpoint as save_checkpoint_util,
+)
+
 warnings.filterwarnings("ignore")
-# METEOR 점수 계산을 위한 nltk
-try:
-    from nltk.translate.meteor_score import meteor_score
-    from nltk.tokenize import word_tokenize
-    import nltk
-    # 필요한 데이터 다운로드
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except LookupError:
-        nltk.download('punkt', quiet=True)
-    try:
-        nltk.data.find('wordnet')
-    except LookupError:
-        nltk.download('wordnet', quiet=True)
-    METEOR_AVAILABLE = True
-except ImportError:
-    print("⚠️ nltk가 설치되지 않았습니다. METEOR 점수를 계산할 수 없습니다.")
-    print("   설치: pip install nltk")
-    METEOR_AVAILABLE = False
-    meteor_score = None
 
 # --- [0] 설정 (Configuration) ---
 # 디바이스 선택: CUDA > MPS > CPU
@@ -88,11 +85,13 @@ else:
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
 
 # 사전 학습된 임베딩 설정
-EMBED_DIM = 300  # GloVe 6B.300d 사용
+EMBED_DIM = 300  # GloVe 6B.300d 사용 (또는 최적화 후 100으로 변경 가능)
 USE_PRETRAINED_EMBEDDING = True  # 사전 학습된 임베딩 사용 여부
+
 # GloVe 파일 경로 (assets 하위에 위치)
 # 파일을 assets/glove.6B.300d.txt 위치에 저장
 GLOVE_PATH = os.path.join(ASSETS_DIR, "glove.6B.300d.txt")
+GLOVE_OPTIMIZED_PATH = os.path.join(ASSETS_DIR, f"glove_optimized.pkl")
 
 # --- [1] 이미지 전처리 ---
 transform = transforms.Compose([
@@ -103,68 +102,6 @@ transform = transforms.Compose([
 ])
 
 # --- [2] 캡션 전처리 함수 ---
-def load_glove_embeddings(glove_path, embed_dim=300):
-    """GloVe 임베딩 파일 로드"""
-    print(f"GloVe 임베딩 로드 중: {glove_path}")
-    embeddings_dict = {}
-    
-    if not os.path.exists(glove_path):
-        print(f"⚠️ GloVe 파일을 찾을 수 없습니다: {glove_path}")
-        print("\n📥 GloVe 다운로드 방법:")
-        print("  방법 1 (터미널):")
-        print(f"    wget http://nlp.stanford.edu/data/glove.6B.zip")
-        print(f"    unzip glove.6B.zip")
-        print(f"    mv glove.6B.300d.txt {ASSETS_DIR}/")
-        print("  방법 2 (Colab):")
-        print(f"    !wget http://nlp.stanford.edu/data/glove.6B.zip")
-        print(f"    !unzip glove.6B.zip")
-        print(f"    !mv glove.6B.300d.txt {ASSETS_DIR}/")
-        print("  방법 3 (수동):")
-        print("    https://nlp.stanford.edu/projects/glove/ 에서 다운로드")
-        print(f"    다운로드한 glove.6B.300d.txt 파일을 {ASSETS_DIR}/ 폴더에 저장")
-        print(f"\n💡 GloVe 파일이 없으면 랜덤 초기화된 임베딩을 사용합니다.")
-        print(f"   예상 경로: {glove_path}\n")
-        return None
-    
-    try:
-        with open(glove_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                values = line.split()
-                word = values[0]
-                vector = np.asarray(values[1:], dtype='float32')
-                if len(vector) == embed_dim:
-                    embeddings_dict[word] = vector
-        
-        print(f"✅ GloVe 임베딩 로드 완료: {len(embeddings_dict)}개 단어")
-        return embeddings_dict
-    except Exception as e:
-        print(f"⚠️ GloVe 로드 실패: {e}")
-        return None
-
-def create_embedding_matrix(word_map, glove_embeddings=None, embed_dim=300):
-    """단어장에 맞는 임베딩 행렬 생성"""
-    vocab_size = len(word_map)
-    embedding_matrix = np.random.normal(scale=0.6, size=(vocab_size, embed_dim))
-    
-    if glove_embeddings is None:
-        print("⚠️ 사전 학습된 임베딩 없음 - 랜덤 초기화 사용")
-        return embedding_matrix
-    
-    # 특수 토큰은 랜덤 초기화 유지
-    found_count = 0
-    for word, idx in word_map.items():
-        if word in ['<pad>', '<start>', '<end>', '<unk>']:
-            continue  # 특수 토큰은 랜덤 초기화 유지
-        
-        if word in glove_embeddings:
-            embedding_matrix[idx] = glove_embeddings[word]
-            found_count += 1
-        elif word.lower() in glove_embeddings:
-            embedding_matrix[idx] = glove_embeddings[word.lower()]
-            found_count += 1
-    
-    print(f"✅ 임베딩 행렬 생성 완료: {found_count}/{vocab_size-4}개 단어 매칭 (특수 토큰 제외)")
-    return embedding_matrix
 
 def build_vocab(captions, min_freq=MIN_WORD_FREQ):
     """캡션 리스트로부터 단어장 생성"""
@@ -415,25 +352,13 @@ def validate_epoch(model, val_dataloader, criterion, epoch, vocab_size, word_map
                         reference_cap = ' '.join([rev_word_map.get(int(idx), '<unk>') for idx in cap_single[0] if int(idx) > 0])
                         reference_cap = reference_cap.replace('<start> ', '').replace(' <end>', '')
                         
-                        # METEOR 계산
-                        meteor = 0.0
-                        if METEOR_AVAILABLE and meteor_score:
-                            try:
-                                reference = [reference_cap.lower().split()]
-                                hypothesis = generated_caption.lower().split()
-                                meteor = meteor_score(reference, hypothesis)
-                            except:
-                                # 단어 일치율로 대체
-                                ref_words = set(reference_cap.lower().split())
-                                gen_words = set(generated_caption.lower().split())
-                                common = ref_words & gen_words
-                                meteor = len(common) / len(ref_words) if len(ref_words) > 0 else 0.0
-                        else:
-                            # nltk가 없으면 단어 일치율
-                            ref_words = set(reference_cap.lower().split())
-                            gen_words = set(generated_caption.lower().split())
-                            common = ref_words & gen_words
-                            meteor = len(common) / len(ref_words) if len(ref_words) > 0 else 0.0
+                        # METEOR 계산 (유틸 함수 사용)
+                        meteor = calculate_meteor(
+                            generated_caption.lower().split(),
+                            reference_cap
+                        )
+                        if meteor is None:
+                            meteor = 0.0
                         
                         meteor_scores.append(meteor)
                 except Exception as e:
@@ -479,26 +404,13 @@ def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_sample
                 # 토큰 제거하고 문장으로 변환
                 generated_caption = ' '.join([w for w in generated_words if w not in ['<start>', '<end>', '<pad>', '<unk>']])
                 
-                # METEOR 점수 계산
-                meteor = 0.0
-                if METEOR_AVAILABLE and meteor_score:
-                    try:
-                        # METEOR는 reference를 리스트로 받음 (여러 참조 가능)
-                        reference = [original_caption.lower().split()]
-                        hypothesis = generated_caption.lower().split()
-                        meteor = meteor_score(reference, hypothesis)
-                    except Exception as e:
-                        # METEOR 계산 실패 시 단어 일치율로 대체
-                        original_words = set(original_caption.lower().split())
-                        generated_words_set = set(generated_caption.lower().split())
-                        common_words = original_words & generated_words_set
-                        meteor = len(common_words) / len(original_words) if len(original_words) > 0 else 0.0
-                else:
-                    # nltk가 없으면 단어 일치율로 대체
-                    original_words = set(original_caption.lower().split())
-                    generated_words_set = set(generated_caption.lower().split())
-                    common_words = original_words & generated_words_set
-                    meteor = len(common_words) / len(original_words) if len(original_words) > 0 else 0.0
+                # METEOR 점수 계산 (유틸 함수 사용)
+                meteor = calculate_meteor(
+                    generated_caption.lower().split(),
+                    original_caption
+                )
+                if meteor is None:
+                    meteor = 0.0
                 
                 meteor_scores.append(meteor)
                 
@@ -572,11 +484,15 @@ def main():
     print(f"단어장 크기: {vocab_size}")
     print(f"주요 단어 예시: {list(word_map.items())[:10]}")
     
-    # 사전 학습된 임베딩 로드
-    use_pretrained = USE_PRETRAINED_EMBEDDING  # 로컬 변수로 복사
+    # 사전 학습된 임베딩 로드 (유틸 함수 사용)
+    use_pretrained = USE_PRETRAINED_EMBEDDING
     glove_embeddings = None
+    actual_embed_dim = EMBED_DIM
+    
     if use_pretrained:
-        glove_embeddings = load_glove_embeddings(GLOVE_PATH, embed_dim=EMBED_DIM)
+        glove_embeddings, actual_embed_dim = load_glove_embeddings_with_fallback(
+            GLOVE_PATH, GLOVE_OPTIMIZED_PATH, EMBED_DIM
+        )
         if glove_embeddings is None:
             print("⚠️ 사전 학습된 임베딩을 사용할 수 없습니다. 랜덤 초기화를 사용합니다.")
             use_pretrained = False
@@ -584,7 +500,7 @@ def main():
     # 임베딩 행렬 생성
     embedding_matrix = None
     if use_pretrained and glove_embeddings:
-        embedding_matrix = create_embedding_matrix(word_map, glove_embeddings, embed_dim=EMBED_DIM)
+        embedding_matrix = create_embedding_matrix(word_map, glove_embeddings, embed_dim=actual_embed_dim)
     else:
         # 랜덤 초기화 사용 시에도 embed_dim은 설정값 사용
         pass
@@ -763,7 +679,7 @@ def main():
             )
 
         # 주기적으로 모델 저장
-        save_path = os.path.join(MODEL_SAVE_DIR, f"lightweight_captioning_model_{epoch+1}_epoch_loss_{avg_val_loss:.4f}.pth")
+        save_path = os.path.join(MODEL_SAVE_DIR, f"lightweight_captioning_model_{epoch+1}_epoch_meteor_{avg_meteor:.4f}.pth")
         try:
             torch.save({
                 'model_state_dict': model.state_dict(),
