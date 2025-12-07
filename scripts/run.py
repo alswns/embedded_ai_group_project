@@ -92,7 +92,10 @@ def preprocess_image_optimized(frame):
     image_tensor = torch.from_numpy(img).unsqueeze(0).to(device)
     
     # ★ 핵심: GPU 모드일 경우 Half Precision(FP16) 적용
-    return image_tensor.float()
+    if dtypes == torch.float16:
+        return image_tensor.half() 
+    else:
+        return image_tensor.float()
 
 preprocess_image = preprocess_image_optimized
 
@@ -239,7 +242,7 @@ def select_quantization():
     
     print()
     while True:
-        choice = input("양자화 옵션을 선택하세요 (1-3): ").strip()
+        choice = input("양자화 옵션을 선택하세요 (1-2): ").strip()
         if choice in QUANTIZE_OPTIONS:
             return choice
         print("❌ 잘못된 입력입니다. 다시 선택해주세요.")
@@ -552,7 +555,6 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
         # 모델을 디바이스로 이동
         model = model.to(device)
         model.eval()
-        frame=frame.to(dtypes)
         # 이미지 전처리
         image_tensor = preprocess_image(frame)
         
