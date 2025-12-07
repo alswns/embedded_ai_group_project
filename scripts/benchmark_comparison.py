@@ -36,6 +36,28 @@ except ImportError:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NUM_RUNS = 50  # 각 모델당 추론 횟수
 WARMUP_RUNS = 5  # 워밍업 횟수
+# ============================================================================
+# 환경 설정 (CRITICAL - 크래시 방지)
+# ============================================================================
+print("⚙️  환경 설정 중...", file=sys.stderr)
+torch.backends.cudnn.enabled = False  # 불안정성 방지
+torch.backends.cudnn.benchmark = True # 입력 크기가 고정(224x224)이므로 필수
+
+# CPU/GPU 디바이스 자동 감지 및 강제 설정
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    print("🚀 디바이스: GPU (NVIDIA Maxwell) 가속 모드", file=sys.stderr)
+else:
+    device = torch.device("cpu")
+    print("📍 디바이스: CPU (경고: 성능이 낮을 수 있음)", file=sys.stderr)
+
+# 스레드 최적화
+torch.set_num_threads(4)
+torch.set_num_interop_threads(4)
+
+sys.modules['numpy._core'] = np.core
+sys.modules['numpy._core.multiarray'] = np.core.multiarray
+dtypes = torch.float32
 
 print("📊 Jetson Nano 모델 비교 벤치마크")
 print("=" * 70)
