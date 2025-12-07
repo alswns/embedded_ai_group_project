@@ -129,7 +129,8 @@ class PerformanceMonitor:
         self.memory_usage = []
         self.gpu_memory = []
         self.process = psutil.Process(os.getpid())
-        print("모델 크기 : {:.2f} MB".format(sum(p.numel() for p in model.parameters()) * 4 / 1024 / 1024))
+        from src.utils.model_utils import get_model_size_mb
+        print("모델 크기 : {:.2f} MB".format(get_model_size_mb(model)))
     def record_inference(self, inference_time):
         """추론 시간 기록"""
         self.inference_times.append(inference_time)
@@ -618,7 +619,7 @@ def main():
     try:
         # 더미 데이터 생성 (1, 3, 224, 224)
         dummy_input = torch.zeros(1, 3, 224, 224).to(device)
-        if device.type == 'cuda':
+        if dtypes == torch.float16:
             dummy_input = dummy_input.half() # FP16 모드라면
 
         # 강제로 한 번 실행시켜서 CUDA 커널을 깨움

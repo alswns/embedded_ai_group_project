@@ -1,5 +1,5 @@
 """
-Pruning 벤치마크 스크립트 (리팩토링됨)
+Pruning 벤치마크 스크립트 (Jetson Nano 최적화)
 다양한 Pruning 기법을 적용하고 성능을 비교합니다.
 """
 import os
@@ -11,8 +11,12 @@ import matplotlib.pyplot as plt
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import multiprocessing
 
 warnings.filterwarnings('ignore')
+
+# ★ Jetson Nano 최적화
+np.seterr(over='ignore', under='ignore')
 
 # 공통 유틸리티 import
 from src.utils import (
@@ -73,9 +77,21 @@ ENABLE_QUANTIZATION = True
 QUANTIZATION_METHOD = 'dynamic'  # 'dynamic', 'static', 'qat'
 
 # 디바이스 선택
+# ★ Jetson Nano 최적화: CPU 성능 최대화
+num_cores = multiprocessing.cpu_count()
+optimal_threads = max(2, num_cores - 1)
+torch.set_num_threads(optimal_threads)
+torch.set_num_interop_threads(2)
+
+import cv2
+cv2.setNumThreads(0)  # OpenCV 병렬화 비활성화
+
 device = setup_device()
 if ENABLE_QUANTIZATION:
-    device=torch.device('cpu')
+    device = torch.device('cpu')
+
+print("📍 Jetson Nano 최적화 설정: {} 스레드".format(optimal_threads))
+
 transform = get_image_transform()
 
 
@@ -256,11 +272,11 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                     continue
                 
                 if (batch_idx + 1) % 10 == 0:
-                    train_iter.set_postfix(loss="{}".format(total_loss / num_batches:.4f))
+                    train_iter.set_postfix(loss="{:.4f}".format(total_loss / num_batches))
             
             # Epoch 완료
-            avg_loss = total_loss / num_batches if num_batches > 0 else float('in')
-            print("   ✅ Epoch {epoch+1} 완료 (학습 Loss: {avg_loss:.4f})")
+            avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
+            print("   ✅ Epoch {} 완료 (학습 Loss: {:.4f})".format(epoch+1, avg_loss))
             
             # 검증
             model.eval()
@@ -282,8 +298,8 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                     except:
                         continue
             
-            avg_val_loss = val_loss / val_batches if val_batches > 0 else float('in')
-            print("      검증 Loss: {avg_val_loss:.4f}")
+            avg_val_loss = val_loss / val_batches if val_batches > 0 else float('inf')
+            print("      검증 Loss: {:.4f}".format(avg_val_loss))
             
             model.train()
             
@@ -311,12 +327,12 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                     best_meteor_score = current_meteor_score
                     patience_counter = 0
                     best_model_state = model.state_dict().copy()
-                    print("   🎉 최고 METEOR: {}".format(best_meteor_score:.4f))
+                    print("   🎉 최고 METEOR: {:.4f}".format(best_meteor_score))
                 elif val_loss < best_loss:
                     best_loss = val_loss
                     patience_counter = 0
                     best_model_state = model.state_dict().copy()
-                    print("   🎉 새로운 최저 검증 Loss: {}".format(best_loss:.4f))
+                    print("   🎉 새로운 최저 검증 Loss: {:.4f}".format(best_loss))
                 else:
                     patience_counter += 1
                     print("   ⚠️ METEOR 미개선 (Patience: {}/{})".format(patience_counter, EARLY_STOPPING_PATIENCE))
@@ -392,7 +408,7 @@ def plot_embedded_metrics(results):
     bar=axes[0, 0].bar(precisions, ms_per_token, alpha=0.8, color=colors)
     for rect, ms in zip(bar, ms_per_token):
         height = rect.get_height()
-        axes[0, 0].text(rect.get_x() + rect.get_width() / 2.0, height, '{}' .format(ms:.1f), 
+        axes[0, 0].text(rect.get_x() + rect.get_width() / 2.0, height, '{:.1f}'.format(ms), 
                         ha='center', va='bottom', fontsize=8)
     axes[0, 0].set_ylabel('시간 (ms/token)')
     axes[0, 0].set_title('① 토큰당 추론 시간')
@@ -403,7 +419,7 @@ def plot_embedded_metrics(results):
     bar=axes[0, 1].bar(precisions, model_sizes, alpha=0.8, color=colors)
     for rect, size in zip(bar, model_sizes):
         height = rect.get_height()
-        axes[0, 1].text(rect.get_x() + rect.get_width() / 2.0, height, '{}' .format(size:.1f), 
+        axes[0, 1].text(rect.get_x() + rect.get_width() / 2.0, height, '{:.1f}'.format(size), 
                         ha='center', va='bottom', fontsize=8)
     axes[0, 1].set_ylabel('크기 (MB)')
     axes[0, 1].set_title('② 모델 크기')
@@ -419,11 +435,11 @@ def plot_embedded_metrics(results):
     bar3=axes[0, 2].bar(x_pos + width, inference_memory, width, label='추론', alpha=0.8, color='coral')
     for rect, total, model_mem, inf_mem in zip(bar1, total_memory_sum, model_memory, inference_memory):
         height = rect.get_height()
-        axes[0, 2].text(rect.get_x() + rect.get_width() / 2.0, height, '{}' .format(total:.1f), 
+        axes[0, 2].text(rect.get_x() + rect.get_width() / 2.0, height, '{:.1f}'.format(total), 
                         ha='center', va='bottom', fontsize=8)
-        axes[0, 2].text(rect.get_x() - width + rect.get_width() / 2.0, model_mem, '{}' .format(model_mem:.1f), 
+        axes[0, 2].text(rect.get_x() - width + rect.get_width() / 2.0, model_mem, '{:.1f}'.format(model_mem), 
                         ha='center', va='bottom', fontsize=8)
-        axes[0, 2].text(rect.get_x() + width + rect.get_width() / 2.0, inf_mem, '{}' .format(inf_mem:.1f), 
+        axes[0, 2].text(rect.get_x() + width + rect.get_width() / 2.0, inf_mem, '{:.1f}'.format(inf_mem), 
                         ha='center', va='bottom', fontsize=8)
     axes[0, 2].set_ylabel('메모리 (MB)')
     axes[0, 2].set_title('③ 메모리 분리')
@@ -436,7 +452,7 @@ def plot_embedded_metrics(results):
     bar=axes[1, 0].bar(precisions, total_params, alpha=0.8, color=colors)
     for rect, param in zip(bar, total_params):
         height = rect.get_height()
-        axes[1, 0].text(rect.get_x() + rect.get_width() / 2.0, height, '{}' .format(param:.1f), 
+        axes[1, 0].text(rect.get_x() + rect.get_width() / 2.0, height, '{:.1f}'.format(param), 
                         ha='center', va='bottom', fontsize=8)
     axes[1, 0].set_ylabel('파라미터 (M)')
     axes[1, 0].set_title('④ 총 파라미터 수')
@@ -447,7 +463,7 @@ def plot_embedded_metrics(results):
     bar=axes[1, 1].bar(precisions, flops_reduction, alpha=0.8, color=colors)
     for rect, reduction in zip(bar, flops_reduction):
         height = rect.get_height()
-        axes[1, 1].text(rect.get_x() + rect.get_width() / 2.0, height, '{}' .format(reduction:.1f), 
+        axes[1, 1].text(rect.get_x() + rect.get_width() / 2.0, height, '{:.1f}'.format(reduction), 
                         ha='center', va='bottom', fontsize=8)
     axes[1, 1].set_ylabel('감소율 (%)')
     axes[1, 1].set_title('⑤ FLOPs 감소율')
@@ -458,7 +474,7 @@ def plot_embedded_metrics(results):
     bar=axes[1, 2].bar(precisions, meteor_scores, alpha=0.8, color=colors)
     for rect, score in zip(bar, meteor_scores):
         height = rect.get_height()
-        axes[1, 2].text(rect.get_x() + rect.get_width() / 2.0, height, '{}' .format(score:.2f), 
+        axes[1, 2].text(rect.get_x() + rect.get_width() / 2.0, height, '{:.2f}'.format(score), 
                         ha='center', va='bottom', fontsize=8)
     axes[1, 2].set_ylabel('METEOR')
     axes[1, 2].set_title('⑥ 캡션 품질 (METEOR)')
@@ -469,7 +485,7 @@ def plot_embedded_metrics(results):
     bar=axes[2, 0].bar(precisions, size_reduction, alpha=0.8, color=colors)
     for rect, reduction in zip(bar, size_reduction):
         height = rect.get_height()
-        axes[2, 0].text(rect.get_x() + rect.get_width() / 2.0, height, '{}' .format(reduction:.1f), 
+        axes[2, 0].text(rect.get_x() + rect.get_width() / 2.0, height, '{:.1f}'.format(reduction), 
                         ha='center', va='bottom', fontsize=8)
     axes[2, 0].set_ylabel('감소율 (%)')
     axes[2, 0].set_title('⑦ 모델 크기 감소율')
@@ -482,7 +498,7 @@ def plot_embedded_metrics(results):
     bar=axes[2, 1].bar(precisions, tradeoff, alpha=0.8, color=colors)
     for rect, tm in zip(bar, total_memory):
         height = rect.get_height()
-        axes[2, 1].text(rect.get_x() + rect.get_width() / 2.0, height, '{}' .format(tm:.1f), 
+        axes[2, 1].text(rect.get_x() + rect.get_width() / 2.0, height, '{:.1f}'.format(tm), 
                         ha='center', va='bottom', fontsize=8)
     axes[2, 1].set_ylabel('트레이드오프 (ms*MB)')
     axes[2, 1].set_title('⑧ 메모리-성능 트레이드오프')
@@ -493,7 +509,7 @@ def plot_embedded_metrics(results):
     bar=axes[2, 2].bar(precisions, mean_times, alpha=0.8, color=colors)
     for rect, time in zip(bar, mean_times):
         height = rect.get_height()
-        axes[2, 2].text(rect.get_x() + rect.get_width() / 2.0, height, '{}' .format(time:.1f), 
+        axes[2, 2].text(rect.get_x() + rect.get_width() / 2.0, height, '{:.1f}'.format(time), 
                         ha='center', va='bottom', fontsize=8)
     axes[2, 2].set_ylabel('시간 (ms)')
     axes[2, 2].set_title('⑨ 전체 문장 추론 시간')
@@ -564,23 +580,23 @@ def main():
         for pruning_rate in PRUNING_RATES:
             if ENABLE_MAGNITUDE_PRUNING:
                 print("\n" + "="*70)
-                print("=== Magnitude Pruning ({}%) ===".format(pruning_rate*100:.0f))
+                print("=== Magnitude Pruning ({:.0f}%) ===".format(pruning_rate*100))
                 print("="*70)
                 try:
                     clear_memory(device)
                     pruned_model = apply_magnitude_pruning(base_model, pruning_rate)
-                    run_pruning_benchmark(pruned_model, "Magnitude-{}%".format(pruning_rate*100:.0f), img_tensor, wm, rwm, ref_caption, baseline_params, device, results, val_dataloader=val_dataloader)
+                    run_pruning_benchmark(pruned_model, "Magnitude-{:.0f}%".format(pruning_rate*100), img_tensor, wm, rwm, ref_caption, baseline_params, device, results, val_dataloader=val_dataloader)
                     del pruned_model
                     clear_memory(device)
                 except Exception as e:
-                    print("⚠️ Magnitude Pruning ({}%) 실패: {}".format(pruning_rate*100:.0f, e))
+                    print("⚠️ Magnitude Pruning ({:.0f}%) 실패: {}".format(pruning_rate*100, e))
             
             print("\n" + "="*70)
-            print("=== Structured Pruning ({}%) ===".format(pruning_rate*100:.0f))
+            print("=== Structured Pruning ({:.0f}%) ===".format(pruning_rate*100))
             print("="*70)
             
             if pruning_rate > MAX_PRUNING_RATE:
-                print("   ⚠️ 경고: {}% 프루닝은 정확도 손실이 매우 큼".format(pruning_rate*100:.0f))
+                print("   ⚠️ 경고: {:.0f}% 프루닝은 정확도 손실이 매우 큼".format(pruning_rate*100))
             
             try:
                 clear_memory(device)
@@ -589,11 +605,11 @@ def main():
                     img_tensor=img_tensor,
                     device=device, use_hessian=True
                 )
-                run_pruning_benchmark(pruned_model, "Structured-{}%".format(pruning_rate*100:.0f), img_tensor, wm, rwm, ref_caption, baseline_params, device, results, val_dataloader=val_dataloader)
+                run_pruning_benchmark(pruned_model, "Structured-{:.0f}%".format(pruning_rate*100), img_tensor, wm, rwm, ref_caption, baseline_params, device, results, val_dataloader=val_dataloader)
                 del pruned_model
                 clear_memory(device)
             except Exception as e:
-                print("⚠️ Structured Pruning ({}%) 실패: {}".format(pruning_rate*100:.0f, e))
+                print("⚠️ Structured Pruning ({:.0f}%) 실패: {}".format(pruning_rate*100, e))
     
     # 결과 요약
     print("\n" + "="*70)
