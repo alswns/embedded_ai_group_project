@@ -103,10 +103,10 @@ class Model(nn.Module):
         # [A] 인코더 설정 (MobileNetV3 Small)
         # width_mult를 조절해서 더 경량화 가능 (예: 0.5)
         gc.collect()
-        from torchvision.models import mobilenet_v3_small
+        
         print("Initializing Model with width_mult={}".format(width_mult))
 
-        mobilenet = mobilenet_v3_small(weights=None, width_mult=width_mult)
+        mobilenet = MobileNetV3Small(width_mult=width_mult)
         print("MobileNetV3 Small initialized.")
         # 마지막 분류기(classifier)를 떼어내고, 특징 추출기(features)만 가져옴
         self.encoder = mobilenet.features
@@ -186,3 +186,169 @@ class Model(nn.Module):
                 input_word = predicted_id
                 
             return [rev_word_map[k] for k in seq]
+        
+
+def _make_divisible(v, divisor, min_value=None):
+    if min_value is None:
+        min_value = divisor
+    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
+    if new_v < 0.9 * v:
+        new_v += divisor
+    return new_v
+
+# 2. Activation Functions (Hard-Sigmoid, Hard-Swish)
+class Hsigmoid(nn.Module):
+    def __init__(self, inplace=True):
+        super(Hsigmoid, self).__init__()
+        self.relu = nn.ReLU6(inplace=inplace)
+    def forward(self, x):
+        return self.relu(x + 3) / 6
+
+class Hswish(nn.Module):
+    def __init__(self, inplace=True):
+        super(Hswish, self).__init__()
+        self.sigmoid = Hsigmoid(inplace=inplace)
+    def forward(self, x):
+        return x * self.sigmoid(x)
+
+# 3. Squeeze-and-Excitation (SE) Block
+# 채널 간의 중요도를 학습하여 성능을 높이는 모듈
+class SELayer(nn.Module):
+    def __init__(self, channel, reduction=4):
+        super(SELayer, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channel, _make_divisible(channel // reduction, 8)),
+            nn.ReLU(inplace=True),
+            nn.Linear(_make_divisible(channel // reduction, 8), channel),
+            Hsigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
+# 4. Inverted Residual Block (MobileNet의 핵심 빌딩 블록)
+class InvertedResidual(nn.Module):
+    def __init__(self, inp, oup, stride, exp, kernel, se, act):
+        super(InvertedResidual, self).__init__()
+        self.stride = stride
+        assert stride in [1, 2]
+
+        self.use_res_connect = self.stride == 1 and inp == oup
+
+        layers = []
+        activation = Hswish if act == 'HS' else nn.ReLU
+
+        # Expansion (1x1 conv로 채널 뻥튀기)
+        if exp != inp:
+            layers.append(nn.Sequential(
+                nn.Conv2d(inp, exp, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(exp),
+                activation(inplace=True)
+            ))
+        
+        # Depthwise Conv (채널별 연산)
+        layers.append(nn.Sequential(
+            nn.Conv2d(exp, exp, kernel, stride, (kernel-1)//2, groups=exp, bias=False),
+            nn.BatchNorm2d(exp),
+            activation(inplace=True)
+        ))
+
+        # SE Block (선택적 적용)
+        if se:
+            layers.append(SELayer(exp))
+
+        # Pointwise Linear Conv (다시 채널 줄이기, 활성화 함수 없음)
+        layers.append(nn.Sequential(
+            nn.Conv2d(exp, oup, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(oup),
+        ))
+
+        self.conv = nn.Sequential(*layers)
+
+    def forward(self, x):
+        if self.use_res_connect:
+            return x + self.conv(x)
+        else:
+            return self.conv(x)
+
+# 5. MobileNetV3-Small 메인 클래스
+class MobileNetV3Small(nn.Module):
+    def __init__(self, num_classes=1000, width_mult=1.0):
+        super(MobileNetV3Small, self).__init__()
+        
+        # 설정값: [kernel, exp_size, out_channels, use_se, activation, stride]
+        # 논문의 MobileNetV3-Small 사양표 그대로 구현
+        cfg = [
+            # k, exp, out,  se,     nl,  s 
+            [3, 16,  16,  True,  'RE', 2],
+            [3, 72,  24,  False, 'RE', 2],
+            [3, 88,  24,  False, 'RE', 1],
+            [5, 96,  40,  True,  'HS', 2],
+            [5, 240, 40,  True,  'HS', 1],
+            [5, 240, 40,  True,  'HS', 1],
+            [5, 120, 48,  True,  'HS', 1],
+            [5, 144, 48,  True,  'HS', 1],
+            [5, 288, 96,  True,  'HS', 2],
+            [5, 576, 96,  True,  'HS', 1],
+            [5, 576, 96,  True,  'HS', 1],
+        ]
+
+        input_channel = _make_divisible(16 * width_mult, 8)
+        layers = [nn.Sequential(
+            nn.Conv2d(3, input_channel, 3, 2, 1, bias=False),
+            nn.BatchNorm2d(input_channel),
+            Hswish(inplace=True)
+        )]
+
+        # 블록 쌓기
+        for k, exp, out, se, nl, s in cfg:
+            output_channel = _make_divisible(out * width_mult, 8)
+            exp_channel = _make_divisible(exp * width_mult, 8)
+            layers.append(InvertedResidual(input_channel, output_channel, s, exp_channel, k, se, nl))
+            input_channel = output_channel
+        
+        # 마지막 Conv (Features 단계)
+        last_conv_channel = _make_divisible(576 * width_mult, 8)
+        layers.append(nn.Sequential(
+            nn.Conv2d(input_channel, last_conv_channel, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(last_conv_channel),
+            Hswish(inplace=True)
+        ))
+        
+        self.features = nn.Sequential(*layers)
+
+        # Classifier
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Linear(last_conv_channel, 1024),
+            Hswish(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(1024, num_classes),
+        )
+
+        # 가중치 초기화
+        self._initialize_weights()
+
+    def forward(self, x):
+        x = self.features(x)  # [Batch, 576, 7, 7] (입력이 224일 때)
+        x = self.avgpool(x)   # [Batch, 576, 1, 1]
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
