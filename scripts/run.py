@@ -257,11 +257,11 @@ def load_model(model_choice):
             buffer_size = sum(b.numel() * b.element_size() for b in model.buffers()) / 1024 / 1024
             total_params = sum(p.numel() for p in model.parameters())
             
-            print(f"\n✅ 모델 로드 완료")
+            print("\n✅ 모델 로드 완료")
             print("   모델: {}".format(model_name))
             print("   단어장 크기: {}".format(vocab_size))
-            print("   총 파라미터: {}".format(total_params:,))
-            print("   모델 크기: {} MB".format(param_size + buffer_size:.2f))
+            print("   총 파라미터: {:,}".format(total_params))
+            print("   모델 크기: {:.2f} MB".format(param_size + buffer_size))
             print("   경로: {}".format(model_path))
             
             return model, word_map, rev_word_map, model_name
@@ -429,7 +429,7 @@ def main():
             if caption:
                 last_caption = caption
                 print("\n생성된 캡션: {}".format(caption))
-                print("추론 시간: {}ms".format(inf_time:.2f))
+                print("추론 시간: {:.2f}ms".format(inf_time))
                 
                 # 캡션 음성 출력
                 speak_text_gtts(caption)
