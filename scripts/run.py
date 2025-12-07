@@ -86,6 +86,8 @@ torch.set_num_interop_threads(1)
 device = torch.device("cpu")
 print("📍 디바이스: CPU (GPU 비활성화됨)", file=sys.stderr)
 
+sys.modules['numpy._core'] = np.core
+sys.modules['numpy._core.multiarray'] = np.core.multiarray
 # ============================================================================
 # 이미지 전처리 함수 (torchvision 대체)
 # ============================================================================
