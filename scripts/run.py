@@ -70,18 +70,18 @@ print("✅ 모든 모듈 로드 완료", file=sys.stderr)
 # ============================================================================
 print("⚙️  환경 설정 중...", file=sys.stderr)
 
-# GPU 완전 비활성화 (CPU 전용)
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
-torch.backends.cudnn.enabled = False
-torch.backends.cudnn.benchmark = False
+# # GPU 완전 비활성화 (CPU 전용)
+# os.environ['CUDA_VISIBLE_DEVICES'] = ''
+# torch.backends.cudnn.enabled = False
+# torch.backends.cudnn.benchmark = False
 
-# CPU 스레드 제한
-torch.set_num_threads(2)
-torch.set_num_interop_threads(1)
+# # CPU 스레드 제한
+# torch.set_num_threads(2)
+# torch.set_num_interop_threads(1)
 
-# 디바이스 설정 (강제 CPU)
-device = torch.device("cpu")
-print("📍 디바이스: CPU (GPU 비활성화됨)", file=sys.stderr)
+# # 디바이스 설정 (강제 CPU)
+# device = torch.device("cpu")
+# print("📍 디바이스: CPU (GPU 비활성화됨)", file=sys.stderr)
 
 sys.modules['numpy._core'] = np.core
 sys.modules['numpy._core.multiarray'] = np.core.multiarray
