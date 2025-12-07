@@ -17,7 +17,7 @@ from src.muti_modal_model.model import MobileNetCaptioningModel
 # ============================================================================
 # 디바이스 선택
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"디바이스: {device}")
+print("디바이스: {}".format(device))
 
 # 모델 경로 설정
 MODELS = {
@@ -139,7 +139,7 @@ def select_model():
         path = model_info['path']
         exists = os.path.exists(path)
         status = "✅ 사용 가능" if exists else "❌ 없음"
-        print(f"{key}. {model_info['name']} {status}")
+        print("{}. {model_info[".format(key)name']} {status}")
     
     print()
     while True:
@@ -170,7 +170,7 @@ def speak_text_gtts(text):
                 pygame.time.Clock().tick(10)
             
         except Exception as e:
-            print(f"TTS Error: {e}")
+            print("TTS Error: {}".format(e))
         finally:
             try:
                 if temp_file and os.path.exists(temp_filename):
@@ -199,11 +199,11 @@ def load_model(model_choice):
                 print(f"❌ 모델 파일을 찾을 수 없습니다: {model_info['path']}")
                 return None, None, None, None
         else:
-            print(f"❌ 모델 파일을 찾을 수 없습니다: {model_path}")
+            print("❌ 모델 파일을 찾을 수 없습니다: {}".format(model_path))
             return None, None, None, None
     
     try:
-        print(f"\n📂 모델 로드 중: {model_path}")
+        print("\n📂 모델 로드 중: {}".format(model_path))
         checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
@@ -215,9 +215,38 @@ def load_model(model_choice):
                 print("❌ 단어장 정보가 없습니다.")
                 return None, None, None, None
             
-            # 모델 생성
-            model = MobileNetCaptioningModel(vocab_size=vocab_size, embed_dim=300).to(device)
-            model.load_state_dict(checkpoint['model_state_dict'])
+            # 체크포인트에서 모델 크기 정보 추출
+            state_dict = checkpoint['model_state_dict']
+            
+            decoder_dim = checkpoint.get('decoder_dim', 512)
+            attention_dim = checkpoint.get('attention_dim', 256)
+            
+            # state_dict에서 크기 정보가 없으면 자동 추출
+            if 'decoder.decode_step.weight_ih' in state_dict:
+                decoder_dim = state_dict['decoder.decode_step.weight_ih'].shape[0] // 3
+            
+            if 'decoder.encoder_att.weight' in state_dict:
+                attention_dim = state_dict['decoder.encoder_att.weight'].shape[0]
+            
+            print(f"   📐 감지된 모델 구조:")
+            print("      • Decoder Dim: {}".format(decoder_dim))
+            print("      • Attention Dim: {}".format(attention_dim))
+            
+            # 올바른 크기로 모델 생성
+            model = MobileNetCaptioningModel(
+                vocab_size=vocab_size, 
+                embed_dim=300,
+                decoder_dim=decoder_dim,
+                attention_dim=attention_dim
+            ).to(device)
+            
+            # state_dict 로드 (strict=False로 호환되는 레이어만 로드)
+            try:
+                model.load_state_dict(state_dict, strict=False)
+                print(f"✅ 모델 상태 로드 완료")
+            except Exception as e:
+                print("⚠️  상태 로드 중 경고: {}".format(e))
+            
             model.eval()
             
             model_name = model_info['name']
@@ -227,12 +256,12 @@ def load_model(model_choice):
             buffer_size = sum(b.numel() * b.element_size() for b in model.buffers()) / 1024 / 1024
             total_params = sum(p.numel() for p in model.parameters())
             
-            print(f"✅ 모델 로드 완료")
-            print(f"   모델: {model_name}")
-            print(f"   단어장 크기: {vocab_size}")
-            print(f"   총 파라미터: {total_params:,}")
-            print(f"   모델 크기: {param_size + buffer_size:.2f} MB")
-            print(f"   경로: {model_path}")
+            print(f"\n✅ 모델 로드 완료")
+            print("   모델: {}".format(model_name))
+            print("   단어장 크기: {}".format(vocab_size))
+            print("   총 파라미터: {}".format(total_params:,))
+            print("   모델 크기: {} MB".format(param_size + buffer_size:.2f))
+            print("   경로: {}".format(model_path))
             
             return model, word_map, rev_word_map, model_name
         else:
@@ -240,7 +269,7 @@ def load_model(model_choice):
             return None, None, None, None
             
     except Exception as e:
-        print(f"❌ 모델 로드 실패: {e}")
+        print("❌ 모델 로드 실패: {}".format(e))
         import traceback
         traceback.print_exc()
         return None, None, None, None
@@ -270,7 +299,7 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
         
         return caption, inference_time
     except Exception as e:
-        print(f"캡션 생성 오류: {e}")
+        print("캡션 생성 오류: {}".format(e))
         return None, 0.0
 
 # ============================================================================
@@ -296,7 +325,7 @@ def main():
         return
     
     print("\n" + "="*70)
-    print(f"=== 이미지 캡셔닝 실시간 실행 ({model_name}) ===")
+    print("=== 이미지 캡셔닝 실시간 실행 ({}) ===".format(model_name))
     print("="*70)
     print("\n⌨️  키보드 명령어:")
     print("  's' : 현재 프레임에서 캡션 생성 및 음성 출력")
@@ -325,7 +354,7 @@ def main():
         
         # 모델 정보 표시
         cv2.rectangle(frame, (5, frame.shape[0] - 75), (550, frame.shape[0] - 5), (50, 50, 50), -1)
-        cv2.putText(frame, f"Model: {current_model_name[:40]}", (10, frame.shape[0] - 52),
+        cv2.putText(frame, "Model: {}".format(current_model_name[:40]), (10, frame.shape[0] - 52),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
         
         # 성능 지표 표시
@@ -398,8 +427,8 @@ def main():
             
             if caption:
                 last_caption = caption
-                print(f"\n생성된 캡션: {caption}")
-                print(f"추론 시간: {inf_time:.2f}ms")
+                print("\n생성된 캡션: {}".format(caption))
+                print("추론 시간: {}ms".format(inf_time:.2f))
                 
                 # 캡션 음성 출력
                 speak_text_gtts(caption)
@@ -410,7 +439,7 @@ def main():
             is_processing = False
             
         elif key == ord('r') and last_caption:
-            print(f"\n🔊 마지막 캡션: \"{last_caption}\"")
+            print("\n🔊 마지막 캡션: \"{}\"".format(last_caption))
             speak_text_gtts(last_caption)
             
         elif key == ord('p'):
@@ -437,7 +466,7 @@ def main():
                 print("❌ 카메라를 열 수 없습니다.")
                 return
             
-            print(f"\n✅ {model_name} 모델로 변경되었습니다.\n")
+            print("\n✅ {} 모델로 변경되었습니다.\n".format(model_name))
     
     cap.release()
     cv2.destroyAllWindows()

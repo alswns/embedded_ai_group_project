@@ -81,7 +81,7 @@ transform = get_image_transform()
 def quantize_benchmark(model, img_tensor, wm, rwm, ref_caption,baseline_params, results,label):
     q_model = apply_dynamic_quantization(model)
     
-    result = run_benchmark(q_model, img_tensor, wm, rwm, f"{label} Quantization",ref_caption=ref_caption,
+    result = run_benchmark(q_model, img_tensor, wm, rwm, "{} Quantization".format(label),ref_caption=ref_caption,
     baseline_params=baseline_params,
     num_runs=NUM_RUNS,
     num_meteor_images=METEO_IMAGE_NUM,
@@ -129,7 +129,7 @@ def run_pruning_benchmark(pruned_model, label, img_tensor, wm, rwm, ref_caption,
         
         # 파인 튜닝 후 최종 벤치마크
         result_finetuned = run_benchmark(
-            fine_tuned_model, img_tensor, wm, rwm, f"Pruning Fine-tuned",
+            fine_tuned_model, img_tensor, wm, rwm, "Pruning Fine-tuned",
             ref_caption=ref_caption,
             baseline_params=baseline_params,
             num_runs=NUM_RUNS,
@@ -144,7 +144,7 @@ def run_pruning_benchmark(pruned_model, label, img_tensor, wm, rwm, ref_caption,
 
         # 양자화 적용 (선택적)
             if ENABLE_QUANTIZATION:
-                quantize_benchmark(fine_tuned_model, img_tensor, wm, rwm, ref_caption, baseline_params, results, f"Pruning Fine-tuned")
+                quantize_benchmark(fine_tuned_model, img_tensor, wm, rwm, ref_caption, baseline_params, results, "Pruning Fine-tuned")
         
             
         del fine_tuned_model
@@ -172,7 +172,7 @@ def getDataset(word_map):
         generator=torch.Generator().manual_seed(RANDOM_SEED)
     )
     
-    print(f"   📊 데이터셋: 학습({train_size}개) / 검증({val_size}개)")
+    print("   📊 데이터셋: 학습({}개) / 검증({}개)".format(train_size, val_size))
     
     batch_size = 32 if train_size < 1000 else 64
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
@@ -183,12 +183,12 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                           ref_caption=None, baseline_params=None, epochs=2, 
                           label="pruned_model", learning_rate=5e-5):
     """파인튜닝 수행"""
-    print(f"\n   🔄 파인 튜닝 시작 ({epochs} epoch)...")
+    print("\n   🔄 파인 튜닝 시작 ({} epoch)...".format(epochs))
     
     # 마스크 확인
     if hasattr(model, '_magnitude_pruning_masks'):
         masks = model._magnitude_pruning_masks
-        print(f"   ✅ {len(masks)}개 마스크 감지")
+        print("   ✅ {}개 마스크 감지".format(len(masks)))
     print(label)
     # 체크포인트 로드
     checkpoint, start_epoch, checkpoint_path = load_checkpoint(label, device)
@@ -197,9 +197,9 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
     if checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
         print_checkpoint_info(checkpoint, start_epoch)
-        print(f"   ✅ Epoch {start_epoch+1}부터 재개합니다.")
+        print("   ✅ Epoch {}부터 재개합니다.".format(start_epoch+1))
     else:
-        print(f"   ℹ️ 처음부터 시작합니다.")
+        print("   ℹ️ 처음부터 시작합니다.")
 
     # 학습 설정
     optimizer, criterion = setup_training(model, learning_rate, device)
@@ -218,17 +218,17 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
         vocab_size = len(word_map)
         rev_word_map = {v: k for k, v in word_map.items()}
         
-        best_meteor_score = -float('inf')
+        best_meteor_score = -float('in')
         patience_counter = 0
         best_model_state = None
         
         for epoch in range(start_epoch, epochs):
-            print(f"   🏋️ Epoch {epoch+1}/{epochs}")
+            print("   🏋️ Epoch {epoch+1}/{epochs}")
             total_loss = 0
             num_batches = 0
             
             train_iter = tqdm(enumerate(train_dataloader), total=len(train_dataloader), 
-                             desc=f"      학습 중", ncols=100)
+                             desc="      학습 중", ncols=100)
             
             for batch_idx, (imgs, caps) in train_iter:
                 imgs = imgs.to(device)
@@ -253,11 +253,11 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                     continue
                 
                 if (batch_idx + 1) % 10 == 0:
-                    train_iter.set_postfix(loss=f"{total_loss / num_batches:.4f}")
+                    train_iter.set_postfix(loss="{}".format(total_loss / num_batches:.4f))
             
             # Epoch 완료
-            avg_loss = total_loss / num_batches if num_batches > 0 else float('inf')
-            print(f"   ✅ Epoch {epoch+1} 완료 (학습 Loss: {avg_loss:.4f})")
+            avg_loss = total_loss / num_batches if num_batches > 0 else float('in')
+            print("   ✅ Epoch {epoch+1} 완료 (학습 Loss: {avg_loss:.4f})")
             
             # 검증
             model.eval()
@@ -279,19 +279,19 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                     except:
                         continue
             
-            avg_val_loss = val_loss / val_batches if val_batches > 0 else float('inf')
-            print(f"      검증 Loss: {avg_val_loss:.4f}")
+            avg_val_loss = val_loss / val_batches if val_batches > 0 else float('in')
+            print("      검증 Loss: {avg_val_loss:.4f}")
             
             model.train()
             
             # 벤치마크
             current_meteor_score = None
             if img_tensor is not None and wm is not None and rwm is not None:
-                print(f"\n   📊 Epoch {epoch+1} 벤치마크...")
+                print("\n   📊 Epoch {} 벤치마크...".format(epoch+1))
                 model.eval()
                 benchmark_result = run_benchmark(
                     model, img_tensor, wm, rwm,
-                    f"Fine-tuned (Epoch {epoch+1}/{epochs})",
+                    "Fine-tuned (Epoch {}/{})".format(epoch+1, epochs),
                     ref_caption=ref_caption,
                     baseline_params=baseline_params,
                     num_runs=NUM_RUNS,
@@ -312,13 +312,13 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                     best_meteor_score = current_meteor_score
                     patience_counter = 0
                     best_model_state = model.state_dict().copy()
-                    print(f"   🎉 최고 METEOR: {best_meteor_score:.4f}")
+                    print("   🎉 최고 METEOR: {}".format(best_meteor_score:.4f))
                 else:
                     patience_counter += 1
-                    print(f"   ⚠️ METEOR 미개선 (Patience: {patience_counter}/{EARLY_STOPPING_PATIENCE})")
+                    print("   ⚠️ METEOR 미개선 (Patience: {}/{})".format(patience_counter, EARLY_STOPPING_PATIENCE))
                     
                     if patience_counter >= EARLY_STOPPING_PATIENCE:
-                        print(f"\n   🛑 Early Stopping!")
+                        print("\n   🛑 Early Stopping!")
                         if best_model_state:
                             model.load_state_dict(best_model_state)
                         break
@@ -338,7 +338,7 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
         return model
         
     except Exception as e:
-        print(f"   ⚠️ 파인 튜닝 실패: {e}")
+        print("   ⚠️ 파인 튜닝 실패: {}".format(e))
         import traceback
         traceback.print_exc()
         return model
@@ -459,7 +459,7 @@ def plot_embedded_metrics(results):
     plt.tight_layout()
     file_name = 'embedded_metrics_finetuned.png' if ENABLE_FINETUNING else 'embedded_metrics_comprehensive.png'
     plt.savefig(os.path.join(OUTPUT_DIR, file_name), dpi=300, bbox_inches='tight')
-    print(f"✅ Plot 저장: {os.path.join(OUTPUT_DIR, file_name)}")
+    print("✅ Plot 저장: {}".format(os.path.join(OUTPUT_DIR, file_name)))
     plt.close()
 
 
@@ -504,7 +504,7 @@ def main():
             quantize_benchmark(base_model, img_tensor, wm, rwm, ref_caption, baseline_params, results, "Original")
 
         print("\n" + "="*70)
-        print(f"=== Magnitude-10% & Structured-30% Pruning ===")
+        print("=== Magnitude-10% & Structured-30% Pruning ===")
         pruned_model = apply_structured_pruning(
             base_model, 0.3, 
             img_tensor=img_tensor,
@@ -519,23 +519,23 @@ def main():
         for pruning_rate in PRUNING_RATES:
             if ENABLE_MAGNITUDE_PRUNING:
                 print("\n" + "="*70)
-                print(f"=== Magnitude Pruning ({pruning_rate*100:.0f}%) ===")
+                print("=== Magnitude Pruning ({}%) ===".format(pruning_rate*100:.0f))
                 print("="*70)
                 try:
                     clear_memory(device)
                     pruned_model = apply_magnitude_pruning(base_model, pruning_rate)
-                    run_pruning_benchmark(pruned_model, f"Magnitude-{pruning_rate*100:.0f}%", img_tensor, wm, rwm, ref_caption, baseline_params, device, results)
+                    run_pruning_benchmark(pruned_model, "Magnitude-{}%".format(pruning_rate*100:.0f), img_tensor, wm, rwm, ref_caption, baseline_params, device, results)
                     del pruned_model
                     clear_memory(device)
                 except Exception as e:
-                    print(f"⚠️ Magnitude Pruning ({pruning_rate*100:.0f}%) 실패: {e}")
+                    print("⚠️ Magnitude Pruning ({}%) 실패: {}".format(pruning_rate*100:.0f, e))
             
             print("\n" + "="*70)
-            print(f"=== Structured Pruning ({pruning_rate*100:.0f}%) ===")
+            print("=== Structured Pruning ({}%) ===".format(pruning_rate*100:.0f))
             print("="*70)
             
             if pruning_rate > MAX_PRUNING_RATE:
-                print(f"   ⚠️ 경고: {pruning_rate*100:.0f}% 프루닝은 정확도 손실이 매우 큼")
+                print("   ⚠️ 경고: {}% 프루닝은 정확도 손실이 매우 큼".format(pruning_rate*100:.0f))
             
             try:
                 clear_memory(device)
@@ -544,26 +544,26 @@ def main():
                     img_tensor=img_tensor,
                     device=device, use_hessian=True
                 )
-                run_pruning_benchmark(pruned_model, f"Structured-{pruning_rate*100:.0f}%", img_tensor, wm, rwm, ref_caption, baseline_params, device, results)
+                run_pruning_benchmark(pruned_model, "Structured-{}%".format(pruning_rate*100:.0f), img_tensor, wm, rwm, ref_caption, baseline_params, device, results)
                 del pruned_model
                 clear_memory(device)
             except Exception as e:
-                print(f"⚠️ Structured Pruning ({pruning_rate*100:.0f}%) 실패: {e}")
+                print("⚠️ Structured Pruning ({}%) 실패: {}".format(pruning_rate*100:.0f, e))
     
     # 결과 요약
     print("\n" + "="*70)
     print("=== 벤치마크 결과 요약 ===")
     print("="*70)
     
-    print(f"{'Method':<30} {'시간(ms)':<12} {'모델(MB)':<10} {'감소(%)':<10} {'METEOR':<8}")
+    print("{'Method':<30} {'시간(ms)':<12} {'모델(MB)':<10} {'감소(%)':<10} {'METEOR':<8}")
     print("-"*80)
     for result in results:
-        meteor_str = f"{result.get('meteor_score', 0):.4f}" if result.get('meteor_score') else "N/A"
-        print(f"{result['precision']:<30} "
-              f"{result['mean_time_ms']:.1f}±{result['std_time_ms']:.1f}  "
-              f"{result['model_size_mb']:.1f}       "
-              f"{result.get('size_reduction', 0):.1f}%      "
-              f"{meteor_str}")
+        meteor_str = "{result.get('meteor_score', 0):.4f}" if result.get('meteor_score') else "N/A"
+        print("{result['precision']:<30} "
+              "{result['mean_time_ms']:.1f}±{result['std_time_ms']:.1f}  "
+              "{result['model_size_mb']:.1f}       "
+              "{result.get('size_reduction', 0):.1f}%      "
+              "{}".format(meteor_str))
     
     # 결과 저장
     results_dict = {
@@ -582,14 +582,14 @@ def main():
     results_json_path = os.path.join(OUTPUT_DIR, 'pruning_results.json')
     with open(results_json_path, 'w', encoding='utf-8') as f:
         json.dump(results_dict, f, indent=2, ensure_ascii=False)
-    print(f"\n✅ 결과 JSON 저장: {results_json_path}")
+    print("\n✅ 결과 JSON 저장: {}".format(results_json_path))
     
     # 시각화
     plot_embedded_metrics(results)
     
     print("\n" + "="*70)
     print("=== 벤치마크 완료 ===")
-    print(f"결과 저장 위치: {OUTPUT_DIR}")
+    print("결과 저장 위치: {}".format(OUTPUT_DIR))
     print("="*70)
 
 

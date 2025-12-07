@@ -45,5 +45,5 @@ if __name__ == "__main__":
     # 3. 피처맵 추출
     features = encoder(dummy_img)
     
-    print(f"MobileNetV3 출력 크기: {features.shape}")
+    print("MobileNetV3 출력 크기: {}".format(features.shape))
     # 결과: torch.Size([1, 576, 7, 7]) -> 채널이 576개, 크기는 7x7

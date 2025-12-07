@@ -403,17 +403,16 @@ def load_test_images_for_meteor(val_dataloader, transform, num_images, device, r
 
 def print_benchmark_result(result, prefix=""):
     """벤치마크 결과 출력 (일관된 형식)"""
-    print(f"{prefix}⏱️ 평균 시간: {result['mean_time_ms']:.2f} ± {result['std_time_ms']:.2f} ms")
-    print(f"{prefix}💾 모델 크기 (Dense): {result.get('model_size_mb_dense', 0):.2f} MB")
-    print(f"{prefix}💾 모델 크기 (Sparse): {result['model_size_mb']:.2f} MB")
-    print(f"{prefix}📉 크기 감소율: {result.get('size_reduction', 0):.2f}%")
-    print(f"{prefix}📊 총 파라미터: {result['total_params']:,} (0이 아닌: {result.get('nonzero_params', 0):,})")
-    print(f"{prefix}✂️ Sparsity: {result.get('sparsity', 0):.2f}%")
-    print(f"{prefix}🧠 메모리 사용량: {result['memory_usage_mb']:.2f} MB")
+    print("{}⏱️ 평균 시간: {:.2f} ± {:.2f} ms".format(prefix, result["mean_time_ms"], result["std_time_ms"]))
+    print("{}💾 모델 크기 (Dense): {:.2f} MB".format(prefix, result.get("model_size_mb_dense", 0)))
+    print("{}💾 모델 크기 (Sparse): {:.2f} MB".format(prefix, result["model_size_mb"]))
+    print("{}📉 크기 감소율: {:.2f}%".format(prefix, result.get("size_reduction", 0)))
+    print("{}📊 총 파라미터: {:,} (0이 아닌: {:,})".format(prefix, result["total_params"], result.get("nonzero_params", 0)))
+    print("{}✂️ Sparsity: {:.2f}%".format(prefix, result.get("sparsity", 0)))
+    print("{}🧠 메모리 사용량: {:.2f} MB".format(prefix, result.get("memory_usage_mb", 0)))
     if result.get('meteor_score') is not None:
-        print(f"{prefix}⭐ METEOR: {result['meteor_score']:.4f}")
-    print(f"{prefix}📝 예시 캡션: {result.get('example_caption', 'N/A')}")
-
+        print("{}⭐ METEOR: {:.4f}".format(prefix, result.get("meteor_score", 0)))
+    print("{}📝 예시 캡션: {}".format(prefix, result.get("example_caption", 'N/A')))
 
 def calculate_model_size_mb(model, model_type='dense'):
     """
@@ -574,7 +573,7 @@ def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None,
     from .model_utils import count_parameters
     from .pruning_utils import count_nonzero_parameters
     
-    print(f"\n[{precision_name}] 벤치마크 시작...")
+    print("\n[{}] 벤치마크 시작...".format(precision_name))
     
     model_device = next(model.parameters()).device
     inp = img_tensor.clone().detach().to(model_device)
@@ -583,7 +582,7 @@ def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None,
     clear_memory(model_device)
     
     # 2. Warm-up
-    print(f"   🔥 Warm-up 진행 중 (10회)...")
+    print("   🔥 Warm-up 진행 중 (10회)...")
     for _ in range(10):
         if model_device.type == 'cuda':
             torch.cuda.synchronize()
@@ -594,7 +593,7 @@ def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None,
             try:
                 _ = model.generate(inp, wm, rwm, 20)
             except Exception as e:
-                print(f"⚠️ Warm-up 실패: {e}")
+                print("⚠️ Warm-up 실패: {}".format(e))
                 return None
         
         if model_device.type == 'cuda':
@@ -618,16 +617,16 @@ def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None,
     inference_memory_mb = inference_metrics['inference_memory_mb']
     total_memory_mb = inference_metrics['total_memory_mb']
     
-    print(f"   ⏱️ 평균 추론 시간: {mean_ms:.2f} ± {std_ms:.2f} ms")
-    print(f"   ⏱️ 토큰당 시간: {mean_ms_per_token:.2f} ± {std_ms_per_token:.2f} ms/token")
-    print(f"   🧠 메모리: 모델 {model_memory_mb:.2f} MB + 추론 {inference_memory_mb:.2f} MB")
+    print("   ⏱️ 평균 추론 시간: {:.2f} ± {:.2f} ms".format(mean_ms, std_ms))
+    print("   ⏱️ 토큰당 시간: {:.2f} ± {:.2f} ms/token".format(mean_ms_per_token, std_ms_per_token))
+    print("   🧠 메모리: 모델 {:.2f} MB + 추론 {:.2f} MB".format(model_memory_mb, inference_memory_mb))
     
     # 4. METEOR 점수 계산
     avg_meteor = None
     example_caption = "N/A"
     
     if calculate_meteor_fn and val_dataloader and transform:
-        print(f"   📊 METEOR 점수 측정 중: {num_meteor_images}개 이미지 (val_dataloader에서)")
+        print("   📊 METEOR 점수 측정 중: {}개 이미지 (val_dataloader에서)".format(num_meteor_images))
         test_images, test_captions = load_test_images_for_meteor(
             val_dataloader, transform, num_meteor_images, model_device, rev_word_map=rwm, dtype=dtype
         )
@@ -649,13 +648,13 @@ def run_benchmark(model, img_tensor, wm, rwm, precision_name, ref_caption=None,
     size_reduction = calculate_size_reduction(total_params, nonzero_params, baseline_params, sparsity)
     
     # 6. 결과 출력
-    print(f"   💾 모델 크기: {size_mb_sparse:.2f} MB (Sparse)")
-    print(f"   📉 파라미터 감소율: {size_reduction:.2f}%")
-    print(f"   📊 총 파라미터: {total_params:,}")
-    print(f"   ✂️ Sparsity: {sparsity:.2f}%")
+    print("   💾 모델 크기: {:.2f} MB (Sparse)".format(size_mb_sparse))
+    print("   📉 파라미터 감소율: {:.2f}%".format(size_reduction))
+    print("   📊 총 파라미터: {:,}".format(total_params))
+    print("   ✂️ Sparsity: {:.2f}%".format(sparsity))
     if avg_meteor is not None:
-        print(f"   ⭐ METEOR: {avg_meteor:.4f}")
-    print(f"   📝 예시 캡션: {example_caption}")
+        print("   ⭐ METEOR: {:.4f}".format(avg_meteor))
+    print("   📝 예시 캡션: {}".format(example_caption))
     
     return {
         'precision': precision_name,

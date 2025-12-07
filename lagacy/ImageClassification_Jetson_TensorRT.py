@@ -31,7 +31,7 @@ IS_MAC = PLATFORM == 'darwin'
 IS_WINDOWS = PLATFORM == 'windows'
 IS_LINUX = PLATFORM == 'linux' and not IS_JETSON
 
-print(f"플랫폼 감지: {platform.system()} ({platform.machine()})")
+print("플랫폼 감지: {} ({})".format(platform.system(), platform.machine()))
 if IS_JETSON:
     print("환경: Jetson Nano")
 elif IS_MAC:
@@ -60,7 +60,7 @@ if not JETSON_AVAILABLE:
     try:
         import tensorflow as tf
         TENSORFLOW_AVAILABLE = True
-        print(f"TensorFlow 사용 가능: {tf.__version__}")
+        print("TensorFlow 사용 가능: {}".format(tf.__version__))
     except ImportError:
         pass
     
@@ -69,14 +69,14 @@ if not JETSON_AVAILABLE:
         import torchvision
         from torchvision import transforms, models
         TORCH_AVAILABLE = True
-        print(f"PyTorch 사용 가능: {torch.__version__}")
+        print("PyTorch 사용 가능: {}".format(torch.__version__))
     except ImportError:
         pass
     
     try:
         import onnxruntime as ort
         ONNX_AVAILABLE = True
-        print(f"ONNX Runtime 사용 가능: {ort.__version__}")
+        print("ONNX Runtime 사용 가능: {}".format(ort.__version__))
     except ImportError:
         pass
     
@@ -121,7 +121,7 @@ if IS_JETSON:
 else:
     OUTPUT_DIR = "./performance_results"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-print(f"그래프 저장 경로: {OUTPUT_DIR}\n")
+print("그래프 저장 경로: {}\n".format(OUTPUT_DIR))
 
 # ============================================================================
 # 캡션 생성 모델 설정
@@ -229,9 +229,9 @@ def get_tensorrt_model_size(precision):
     """TensorRT 캐시된 모델 크기 측정"""
     # TensorRT 엔진 캐시 경로
     cache_paths = [
-        f"/var/cache/tensorrt/googlenet_{precision.lower()}.engine",
-        f"~/.cache/tensorrt/googlenet_{precision.lower()}.engine",
-        f"/tmp/tensorrt/googlenet_{precision.lower()}.engine"
+        "/var/cache/tensorrt/googlenet_{}.engine".format(precision.lower()),
+        "~/.cache/tensorrt/googlenet_{}.engine".format(precision.lower()),
+        "/tmp/tensorrt/googlenet_{}.engine".format(precision.lower())
     ]
     
     # 캐시 파일 찾기
@@ -243,7 +243,7 @@ def get_tensorrt_model_size(precision):
             return size_mb
     
     # 캐시 파일이 없으면 추정값 반환
-    print(f"  Warning: 캐시 파일을 찾을 수 없어 추정값 사용")
+    print("  Warning: 캐시 파일을 찾을 수 없어 추정값 사용")
     return MODEL_SPECS[precision]['size']
 
 def count_parameters_googlenet():
@@ -362,17 +362,17 @@ def load_jetson_model(config):
         return None, False
     
     print("\n" + "="*70)
-    print(f"{config['name']} 모델 로딩...")
-    print(f"설명: {config['description']}")
+    print("{config['name']} 모델 로딩...")
+    print("설명: {config['description']}")
     print("="*70)
     
     try:
         # TensorRT 엔진 빌드 (처음 실행 시 시간 소요)
-        print(f"\nTensorRT 엔진 빌드 중 ({config['precision']})...")
+        print("\nTensorRT 엔진 빌드 중 ({config['precision']})...")
         print("주의: 처음 실행 시 5-10분 소요될 수 있습니다.")
         
         # Network 파라미터 구성
-        argv = [f'--network={config["network"]}']
+        argv = ['--network={config["network"]}']
         
         # Precision 설정
         if config['precision'] == 'FP16':
@@ -386,7 +386,7 @@ def load_jetson_model(config):
         return net, True
         
     except Exception as e:
-        print(f"Error: TensorRT 모델 로딩 실패 - {e}")
+        print("Error: TensorRT 모델 로딩 실패 - {}".format(e))
         return None, False
 
 def load_pytorch_model(config):
@@ -395,8 +395,8 @@ def load_pytorch_model(config):
         return None, False
     
     print("\n" + "="*70)
-    print(f"{config['name']} 모델 로딩...")
-    print(f"설명: {config['description']}")
+    print("{config['name']} 모델 로딩...")
+    print("설명: {config['description']}")
     print("="*70)
     
     try:
@@ -421,7 +421,7 @@ def load_pytorch_model(config):
         return {'model': model, 'transform': transform, 'extractor': extractor}, True
         
     except Exception as e:
-        print(f"Error: PyTorch 모델 로딩 실패 - {e}")
+        print("Error: PyTorch 모델 로딩 실패 - {}".format(e))
         return None, False
 
 def load_tensorflow_model(config):
@@ -430,8 +430,8 @@ def load_tensorflow_model(config):
         return None, False
     
     print("\n" + "="*70)
-    print(f"{config['name']} 모델 로딩...")
-    print(f"설명: {config['description']}")
+    print("{config['name']} 모델 로딩...")
+    print("설명: {config['description']}")
     print("="*70)
     
     try:
@@ -455,9 +455,9 @@ def load_tensorflow_model(config):
                         inputs=base_model.input,
                         outputs=feature_layer.output
                     )
-                    print(f"  특징 맵 추출 레이어: {layer_name}")
+                    print("  특징 맵 추출 레이어: {}".format(layer_name))
             except Exception as e:
-                print(f"  Warning: 특징 맵 모델 생성 실패 - {e}")
+                print("  Warning: 특징 맵 모델 생성 실패 - {}".format(e))
             
             print("완료! (Keras InceptionV3 사용)\n")
             return {
@@ -475,11 +475,11 @@ def load_tensorflow_model(config):
                 # Hub 모델은 특징 맵 추출이 제한적
                 return {'model': model, 'feature_model': None}, True
             except Exception as e2:
-                print(f"Error: TensorFlow Hub 모델 로딩 실패 - {e2}")
+                print("Error: TensorFlow Hub 모델 로딩 실패 - {}".format(e2))
                 raise e1
         
     except Exception as e:
-        print(f"Error: TensorFlow 모델 로딩 실패 - {e}")
+        print("Error: TensorFlow 모델 로딩 실패 - {}".format(e))
         return None, False
 
 def load_standard_model(config):
@@ -521,18 +521,18 @@ def get_model_info(config, net=None):
     # FLOPs 계산
     flops = calculate_flops_googlenet()
     
-    print(f"\n{'='*70}")
-    print(f"{config['name']} 모델 사양 (GoogleNet)")
-    print(f"{'='*70}")
+    print("\n{'='*70}")
+    print("{config['name']} 모델 사양 (GoogleNet)")
+    print("{'='*70}")
     if 'network' in config:
-        print(f"  네트워크:           {config['network']}")
+        print("  네트워크:           {config['network']}")
     if 'framework' in config:
-        print(f"  프레임워크:         {config['framework']}")
-    print(f"  정밀도:             {precision}")
-    print(f"  파라미터 수:        {params:,} ({params/1e6:.2f}M)")
-    print(f"  모델 크기:          {size:.2f} MB")
-    print(f"  FLOPs:              {flops:,} ({flops/1e9:.2f}G)")
-    print(f"{'='*70}\n")
+        print("  프레임워크:         {config['framework']}")
+    print("  정밀도:             {}".format(precision))
+    print("  파라미터 수:        {} ({}M)".format(params:,, params/1e6:.2f))
+    print("  모델 크기:          {} MB".format(size:.2f))
+    print("  FLOPs:              {} ({}G)".format(flops:,, flops/1e9:.2f))
+    print("{'='*70}\n")
     
     return {
         'name': config['name'],
@@ -753,7 +753,7 @@ def classify_image_tensorflow(model_dict, frame, extract_features=False):
                     'feature_map': None,
                     'shape': None,
                     'available': False,
-                    'message': f'특징 맵 추출 실패: {str(e)}'
+                    'message': '특징 맵 추출 실패: {}' .format(str(e))
                 }
         else:
             feature_maps = {
@@ -791,7 +791,7 @@ def get_manual_description(object_name):
         if key in object_lower or object_lower in key:
             return MANUAL_DESCRIPTIONS[key]
     
-    return f"This is a {object_name}."
+    return "This is a {}.".format(object_name)
 
 # ============================================================================
 # 특징 맵 저장 및 시각화 함수
@@ -807,13 +807,13 @@ def save_feature_map(feature_maps, model_name, predicted_class, output_dir):
     os.makedirs(feature_map_dir, exist_ok=True)
     
     timestamp = time.strftime("%Y%m%d_%H%M%S")
-    base_filename = f"feature_map_{predicted_class}_{timestamp}"
+    base_filename = "feature_map_{}_{}".format(predicted_class, timestamp)
     
     # NumPy 배열 저장
     feature_map_data = feature_maps['feature_map']
-    npy_path = os.path.join(feature_map_dir, f"{base_filename}.npy")
+    npy_path = os.path.join(feature_map_dir, "{}.npy".format(base_filename))
     np.save(npy_path, feature_map_data)
-    print(f"  특징 맵 저장: {npy_path}")
+    print("  특징 맵 저장: {}".format(npy_path))
     
     # 메타데이터 저장
     metadata = {
@@ -823,7 +823,7 @@ def save_feature_map(feature_maps, model_name, predicted_class, output_dir):
         'timestamp': timestamp,
         'model_name': model_name
     }
-    metadata_path = os.path.join(feature_map_dir, f"{base_filename}_metadata.json")
+    metadata_path = os.path.join(feature_map_dir, "{}_metadata.json".format(base_filename))
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     
@@ -851,10 +851,10 @@ def visualize_feature_map(feature_maps, save_path=None, top_k=16):
             # (C, H, W)로 변환
             channel_data = np.transpose(feature_map_data, (2, 0, 1))
     else:
-        print(f"  Warning: 예상치 못한 특징 맵 shape: {feature_map_data.shape}")
+        print("  Warning: 예상치 못한 특징 맵 shape: {}".format(feature_map_data.shape))
         return None
     
-    print(f"  특징 맵 shape: ({channels}, {height}, {width})")
+    print("  특징 맵 shape: ({}, {}, {})".format(channels, height, width))
     
     # 채널별로 정규화 및 시각화
     num_channels = min(channels, top_k)
@@ -878,7 +878,7 @@ def visualize_feature_map(feature_maps, save_path=None, top_k=16):
     cols = 4
     rows = (num_channels + cols - 1) // cols
     fig, axes = plt.subplots(rows, cols, figsize=(16, 4 * rows))
-    fig.suptitle(f'Feature Maps - Layer: {feature_maps.get("layer_name", "unknown")} (Top {num_channels}/{channels} channels)', 
+    fig.suptitle('Feature Maps - Layer: {feature_maps.get("layer_name", "unknown")} (Top {num_channels}/{channels} channels)', 
                  fontsize=16, fontweight='bold')
     
     # axes 배열 정규화
@@ -910,19 +910,19 @@ def visualize_feature_map(feature_maps, save_path=None, top_k=16):
         # 제목에 활성화 정보 표시
         mean_val = channel_activations[idx][1]
         max_val = channel_activations[idx][2]
-        axes[row, col].set_title(f'Channel {channel_idx}\nMean: {mean_val:.3f} | Max: {max_val:.3f}', 
+        axes[row, col].set_title('Channel {}\nMean: {} | Max: {}' .format(channel_idx, mean_val:.3f, max_val:.3f), 
                                 fontsize=9, pad=5)
-        axes[row, col].axis('off')
+        axes[row, col].axis('of')
     
     # 빈 subplot 숨기기
     for idx in range(num_channels, rows * cols):
         row = idx // cols
         col = idx % cols
         if isinstance(axes, np.ndarray) and axes.ndim == 2:
-            axes[row, col].axis('off')
+            axes[row, col].axis('of')
         else:
             try:
-                axes[idx].axis('off')
+                axes[idx].axis('of')
             except:
                 pass
     
@@ -930,7 +930,7 @@ def visualize_feature_map(feature_maps, save_path=None, top_k=16):
     
     if save_path:
         plt.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='white')
-        print(f"  특징 맵 시각화 저장: {save_path}")
+        print("  특징 맵 시각화 저장: {}".format(save_path))
     else:
         plt.show()
     
@@ -956,7 +956,7 @@ def speak_text_gtts(text):
                 pygame.time.Clock().tick(10)
             
         except Exception as e:
-            print(f"TTS Error: {e}")
+            print("TTS Error: {}".format(e))
         finally:
             try:
                 if temp_file and os.path.exists(temp_filename):
@@ -994,7 +994,7 @@ def load_caption_model(config=None):
         # 학습된 가중치 로드 (있는 경우)
         if config.get('model_path') and os.path.exists(config['model_path']):
             decoder.load_state_dict(torch.load(config['model_path'], map_location='cpu'))
-            print(f"  학습된 가중치 로드: {config['model_path']}")
+            print("  학습된 가중치 로드: {config['model_path']}")
         else:
             print("  Warning: 학습된 가중치가 없습니다. 랜덤 초기화된 모델을 사용합니다.")
             print("  실제 사용 시 학습된 모델을 로드해야 합니다.")
@@ -1004,7 +1004,7 @@ def load_caption_model(config=None):
         return decoder
         
     except Exception as e:
-        print(f"Error: 캡션 모델 로드 실패 - {e}")
+        print("Error: 캡션 모델 로드 실패 - {}".format(e))
         return None
 
 def generate_caption_from_feature_map(feature_maps, caption_model, vocab=None, rev_vocab=None):
@@ -1032,7 +1032,7 @@ def generate_caption_from_feature_map(feature_maps, caption_model, vocab=None, r
                     # (H, W, C) 형식 -> (C, H, W)로 변환
                     feature_tensor = torch.from_numpy(np.transpose(feature_map_data, (2, 0, 1))).float()
             else:
-                return None, f"예상치 못한 특징 맵 shape: {feature_map_data.shape}"
+                return None, "예상치 못한 특징 맵 shape: {}".format(feature_map_data.shape)
         else:
             feature_tensor = feature_map_data
         
@@ -1060,14 +1060,14 @@ def generate_caption_from_feature_map(feature_maps, caption_model, vocab=None, r
                 if word not in ['<start>', '<end>', '<pad>', '<unk>']:
                     caption_words.append(word)
             else:
-                caption_words.append(f"<{word_id}>")
+                caption_words.append("<{}>".format(word_id))
         
         caption_text = " ".join(caption_words) if caption_words else "No caption generated"
         
         return caption_text, attention_weights
         
     except Exception as e:
-        return None, f"캡션 생성 실패: {str(e)}"
+        return None, "캡션 생성 실패: {}".format(str(e))
 
 # ============================================================================
 # 모델 실행 함수
@@ -1076,7 +1076,7 @@ def generate_caption_from_feature_map(feature_maps, caption_model, vocab=None, r
 def run_model(net, model_name, results_dict):
     """모델 실행"""
     if net is None:
-        print(f"Error: {model_name} 모델을 사용할 수 없습니다.")
+        print("Error: {} 모델을 사용할 수 없습니다.".format(model_name))
         return
     
     # 캡션 모델 로드 (가능한 경우)
@@ -1087,11 +1087,11 @@ def run_model(net, model_name, results_dict):
     cap = cv2.VideoCapture(0)
     
     print("\n" + "="*70)
-    print(f"=== {model_name} 실행 중 ===")
+    print("=== {} 실행 중 ===".format(model_name))
     print("="*70)
     print("\nKey commands:")
     print("  's' : 분류 및 음성 출력 (특징 맵 자동 추출)")
-    print("  'f' : 특징 맵 저장 및 시각화")
+    print("  '' : 특징 맵 저장 및 시각화")
     print("  'v' : 특징 맵 시각화 창 표시")
     print("  'c' : 캡션 생성 (특징 맵 사용)")
     print("  'r' : 마지막 설명 다시 듣기")
@@ -1117,7 +1117,7 @@ def run_model(net, model_name, results_dict):
         
         # 모델 이름 표시
         cv2.rectangle(frame, (5, frame.shape[0] - 35), (500, frame.shape[0] - 5), (50, 50, 50), -1)
-        cv2.putText(frame, f"Model: {model_name}", (10, frame.shape[0] - 12),
+        cv2.putText(frame, "Model: {}".format(model_name), (10, frame.shape[0] - 12),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
         
         # 평균 추론 시간 표시
@@ -1125,13 +1125,13 @@ def run_model(net, model_name, results_dict):
             avg_inf_time = np.mean(results_dict['inference_times'][-30:])
             cv2.rectangle(frame, (frame.shape[1] - 200, frame.shape[0] - 35), 
                          (frame.shape[1] - 5, frame.shape[0] - 5), (50, 50, 50), -1)
-            cv2.putText(frame, f"Inf: {avg_inf_time:.1f}ms", (frame.shape[1] - 190, frame.shape[0] - 12),
+            cv2.putText(frame, "Inf: {}ms".format(avg_inf_time:.1f), (frame.shape[1] - 190, frame.shape[0] - 12),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         
         # 현재 인식된 객체 표시
         if last_object and not is_processing:
             cv2.rectangle(frame, (5, 5), (450, 55), (0, 0, 0), -1)
-            cv2.putText(frame, f"Detected: {last_object}", (10, 35),
+            cv2.putText(frame, "Detected: {}".format(last_object), (10, 35),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
         
         # 생성된 캡션 표시
@@ -1199,13 +1199,13 @@ def run_model(net, model_name, results_dict):
                 cv2.putText(frame, line, (10, y_offset + line_num * 25),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
-        cv2.imshow(f'{model_name}', frame)
+        cv2.imshow('{}' .format(model_name), frame)
         
         # 키 입력 처리
         key = cv2.waitKey(1) & 0xFF
         
         if key == ord('q'):
-            print(f"\n{model_name} 종료")
+            print("\n{} 종료".format(model_name))
             break
             
         elif key == ord('s') and not is_processing:
@@ -1219,29 +1219,29 @@ def run_model(net, model_name, results_dict):
             )
             results_dict['inference_times'].append(inf_time)
             
-            print(f"\n인식 결과: {predicted_class}")
-            print(f"  신뢰도: {confidence:.1f}%")
-            print(f"  추론 시간: {inf_time:.2f}ms")
+            print("\n인식 결과: {}".format(predicted_class))
+            print("  신뢰도: {}%".format(confidence:.1f))
+            print("  추론 시간: {}ms".format(inf_time:.2f))
             
             # 특징 맵 정보 출력
             if feature_maps and feature_maps.get('available', False):
-                print(f"  특징 맵: {feature_maps.get('layer_name', 'unknown')}")
-                print(f"    Shape: {feature_maps.get('shape', 'unknown')}")
+                print("  특징 맵: {feature_maps.get('layer_name', 'unknown')}")
+                print("    Shape: {feature_maps.get('shape', 'unknown')}")
             elif feature_maps:
-                print(f"  특징 맵: 추출 불가 - {feature_maps.get('message', 'unknown error')}")
+                print("  특징 맵: 추출 불가 - {feature_maps.get('message', 'unknown error')}")
             
             last_object = predicted_class
             last_feature_maps = feature_maps if feature_maps and feature_maps.get('available', False) else None
             
             description = get_manual_description(predicted_class)
             last_full_description = description
-            print(f"\n설명: {description}")
+            print("\n설명: {}".format(description))
             
             speak_text_gtts(description)
             print("="*70 + "\n")
             is_processing = False
             
-        elif key == ord('f') and not is_processing and last_feature_maps is not None:
+        elif key == ord('') and not is_processing and last_feature_maps is not None:
             # 특징 맵 저장 및 시각화
             print("\n" + "="*70)
             print("특징 맵 저장 및 시각화 중...")
@@ -1275,19 +1275,19 @@ def run_model(net, model_name, results_dict):
                 
                 if caption_text:
                     last_caption = caption_text
-                    print(f"\n생성된 캡션: {caption_text}")
-                    print(f"  어텐션 맵 수: {len(attention_weights) if attention_weights else 0}")
+                    print("\n생성된 캡션: {}".format(caption_text))
+                    print("  어텐션 맵 수: {}".format(len(attention_weights) if attention_weights else 0))
                     
                     # 캡션 음성 출력
                     speak_text_gtts(caption_text)
                 else:
-                    print(f"  Error: {attention_weights if isinstance(attention_weights, str) else '캡션 생성 실패'}")
+                    print("  Error: {attention_weights if isinstance(attention_weights, str) else '캡션 생성 실패'}")
             
             print("="*70 + "\n")
             is_processing = False
             
         elif key == ord('r') and last_full_description:
-            print(f"\n마지막 설명: \"{last_full_description}\"")
+            print("\n마지막 설명: \"{}\"".format(last_full_description))
             speak_text_gtts(last_full_description)
     
     cap.release()
@@ -1334,7 +1334,7 @@ def generate_comparison_graphs(all_results, output_dir):
     for bar, val in zip(bars1, params):
         height = bar.get_height()
         axes[0].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{val:.2f}M', ha='center', va='bottom', fontsize=10)
+                    '{}M' .format(val:.2f), ha='center', va='bottom', fontsize=10)
     
     # 모델 크기
     bars2 = axes[1].bar(range(num_models), sizes, color=colors, alpha=0.8, edgecolor='black')
@@ -1346,7 +1346,7 @@ def generate_comparison_graphs(all_results, output_dir):
     for bar, val in zip(bars2, sizes):
         height = bar.get_height()
         axes[1].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{val:.1f}MB', ha='center', va='bottom', fontsize=10)
+                    '{}MB' .format(val:.1f), ha='center', va='bottom', fontsize=10)
     
     # 추론 시간
     if any(t > 0 for t in times):
@@ -1360,7 +1360,7 @@ def generate_comparison_graphs(all_results, output_dir):
             if val > 0:
                 height = bar.get_height()
                 axes[2].text(bar.get_x() + bar.get_width()/2., height,
-                            f'{val:.1f}ms', ha='center', va='bottom', fontsize=10)
+                            '{}ms' .format(val:.1f), ha='center', va='bottom', fontsize=10)
     else:
         axes[2].text(0.5, 0.5, 'No inference data', ha='center', va='center',
                     transform=axes[2].transAxes, fontsize=14)
@@ -1369,7 +1369,7 @@ def generate_comparison_graphs(all_results, output_dir):
     plt.tight_layout()
     comparison_path = os.path.join(output_dir, 'tensorrt_comparison.png')
     plt.savefig(comparison_path, dpi=300, bbox_inches='tight')
-    print(f"  비교 그래프 저장: {comparison_path}")
+    print("  비교 그래프 저장: {}".format(comparison_path))
     plt.close()
     
     # 2. 개선율 그래프
@@ -1392,7 +1392,7 @@ def generate_comparison_graphs(all_results, output_dir):
     for bar, val in zip(bars1, size_reduction):
         height = bar.get_height()
         axes[0].text(bar.get_x() + bar.get_width()/2., height,
-                    f'{val:.1f}%', ha='center', va='bottom' if val > 0 else 'top', fontsize=10)
+                    '{}%' .format(val:.1f), ha='center', va='bottom' if val > 0 else 'top', fontsize=10)
     
     # 속도 향상율
     if baseline_time and baseline_time > 0:
@@ -1407,7 +1407,7 @@ def generate_comparison_graphs(all_results, output_dir):
         for bar, val in zip(bars2, time_reduction):
             height = bar.get_height()
             axes[1].text(bar.get_x() + bar.get_width()/2., height,
-                        f'{val:.1f}%', ha='center', va='bottom' if val > 0 else 'top', fontsize=10)
+                        '{}%' .format(val:.1f), ha='center', va='bottom' if val > 0 else 'top', fontsize=10)
     else:
         axes[1].text(0.5, 0.5, 'No inference data', ha='center', va='center',
                     transform=axes[1].transAxes, fontsize=14)
@@ -1416,7 +1416,7 @@ def generate_comparison_graphs(all_results, output_dir):
     plt.tight_layout()
     improvement_path = os.path.join(output_dir, 'tensorrt_benefits.png')
     plt.savefig(improvement_path, dpi=300, bbox_inches='tight')
-    print(f"  개선율 그래프 저장: {improvement_path}")
+    print("  개선율 그래프 저장: {}".format(improvement_path))
     plt.close()
     
     print("="*70 + "\n")
@@ -1432,17 +1432,17 @@ if JETSON_AVAILABLE:
     print("Jetson Inference TensorRT Precision Comparison")
     print("="*70)
     configs = TENSORRT_CONFIGS
-    print(f"이 프로그램은 {len(configs)}개의 TensorRT 정밀도를 순차적으로 실행합니다:")
+    print("이 프로그램은 {}개의 TensorRT 정밀도를 순차적으로 실행합니다:".format(len(configs)))
     for i, config in enumerate(configs, 1):
-        print(f"  {i}. {config['name']} - {config['description']}")
+        print("  {}. {config[".format(i)name']} - {config['description']}")
 elif TORCH_AVAILABLE or TENSORFLOW_AVAILABLE:
     print("\n" + "="*70)
     print("Image Classification - Multi-Platform Support")
     print("="*70)
     configs = STANDARD_CONFIGS
-    print(f"이 프로그램은 {len(configs)}개의 모델을 실행합니다:")
+    print("이 프로그램은 {}개의 모델을 실행합니다:".format(len(configs)))
     for i, config in enumerate(configs, 1):
-        print(f"  {i}. {config['name']} - {config['description']}")
+        print("  {}. {config[".format(i)name']} - {config['description']}")
 else:
     print("\nError: 사용 가능한 딥러닝 프레임워크가 없습니다.")
     print("다음 중 하나를 설치해주세요:")
@@ -1466,7 +1466,7 @@ for i, config in enumerate(configs):
         net, success = load_standard_model(config)
     
     if not success or net is None:
-        print(f"Warning: {config['name']} 로딩 실패. 건너뜁니다.")
+        print("Warning: {config['name']} 로딩 실패. 건너뜁니다.")
         # 실패해도 추정값으로 결과 추가
         results = get_model_info(config, None)
         all_results.append(results)
@@ -1476,7 +1476,7 @@ for i, config in enumerate(configs):
     results = get_model_info(config, net)
     all_results.append(results)
     
-    input(f"\nPress Enter to start testing {config['name']}...")
+    input("\nPress Enter to start testing {config['name']}...")
     run_model(net, results['name'], results)
     
     # 메모리 정리
@@ -1504,7 +1504,7 @@ for result in all_results:
         result['time_mean'] = 0.0
         result['time_std'] = 0.0
 
-print(f"\n{'모델':<20} {'파라미터':<15} {'크기(MB)':<12} {'추론시간(ms)':<15} {'개선율'}")
+print("\n{'모델':<20} {'파라미터':<15} {'크기(MB)':<12} {'추론시간(ms)':<15} {'개선율'}")
 print("-"*70)
 
 baseline = all_results[0]
@@ -1519,29 +1519,29 @@ for result in all_results:
     if result['name'] == baseline['name']:
         improvement = 'baseline'
     else:
-        improvement = f"{speedup:.2f}x faster, {compression:.2f}x smaller"
+        improvement = "{}x faster, {}x smaller".format(speedup:.2f, compression:.2f)
     
-    params_str = f"{result['params']/1e6:.2f}M"
-    size_str = f"{result['size']:.1f}"
+    params_str = "{result['params']/1e6:.2f}M"
+    size_str = "{result['size']:.1f}"
     
     if result['time_mean'] > 0:
-        time_str = f"{result['time_mean']:.2f}"
+        time_str = "{result['time_mean']:.2f}"
     else:
         time_str = "N/A"
     
-    print(f"{result['name']:<20} {params_str:<15} {size_str:<12} {time_str:<15} {improvement}")
+    print("{result['name']:<20} {params_str:<15} {size_str:<12} {time_str:<15} {improvement}")
 
 print("-"*70)
 
 # 각 모델의 실행 통계
 for result in all_results:
     if result['inference_times']:
-        print(f"\n{result['name']} 실행 통계:")
-        print(f"  총 추론 횟수:       {len(result['inference_times'])}")
-        print(f"  평균 추론 시간:     {np.mean(result['inference_times']):.2f} ms")
-        print(f"  표준 편차:          {np.std(result['inference_times']):.2f} ms")
-        print(f"  최소 시간:          {np.min(result['inference_times']):.2f} ms")
-        print(f"  최대 시간:          {np.max(result['inference_times']):.2f} ms")
+        print("\n{result['name']} 실행 통계:")
+        print("  총 추론 횟수:       {len(result['inference_times'])}")
+        print("  평균 추론 시간:     {np.mean(result['inference_times']):.2f} ms")
+        print("  표준 편차:          {np.std(result['inference_times']):.2f} ms")
+        print("  최소 시간:          {np.min(result['inference_times']):.2f} ms")
+        print("  최대 시간:          {np.max(result['inference_times']):.2f} ms")
 
 print("\n" + "="*70)
 
@@ -1549,8 +1549,8 @@ print("\n" + "="*70)
 generate_comparison_graphs(all_results, OUTPUT_DIR)
 
 print("\n프로그램이 정상적으로 종료되었습니다.")
-print(f"  그래프 저장 경로: {OUTPUT_DIR}/")
+print("  그래프 저장 경로: {}/".format(OUTPUT_DIR))
 print("  생성된 파일:")
-print(f"    - {OUTPUT_DIR}/tensorrt_comparison.png")
-print(f"    - {OUTPUT_DIR}/tensorrt_benefits.png")
+print("    - {}/tensorrt_comparison.png".format(OUTPUT_DIR))
+print("    - {}/tensorrt_benefits.png".format(OUTPUT_DIR))
 print()

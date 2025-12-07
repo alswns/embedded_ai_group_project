@@ -37,7 +37,7 @@ def load_base_model(model_path=None, device=None):
     
     print("📂 모델 로드 중...")
     if not os.path.exists(model_path):
-        raise FileNotFoundError(f"모델 파일을 찾을 수 없습니다: {model_path}")
+        raise FileNotFoundError("모델 파일을 찾을 수 없습니다: {}".format(model_path))
     
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
@@ -66,6 +66,6 @@ def load_base_model(model_path=None, device=None):
     model.eval()
     model.to(device)
     
-    print(f"✅ 모델 로드 완료 (Vocab Size: {vocab_size})")
+    print("✅ 모델 로드 완료 (Vocab Size: {})".format(vocab_size))
     return model, word_map, rev_word_map
 

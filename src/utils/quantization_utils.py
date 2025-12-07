@@ -48,7 +48,7 @@ def setup_quantization_engine():
         return None
     
     except Exception as e:
-        print(f"⚠️ 양자화 엔진 설정 실패: {e}")
+        print("⚠️ 양자화 엔진 설정 실패: {}".format(e))
         return None
 
 
@@ -79,7 +79,7 @@ def apply_dynamic_quantization(model, dtype=torch.qint8, inplace=False):
         model = deepcopy(model)
     
     try:
-        print(f"   🔄 동적 양자화 적용 중...")
+        print("   🔄 동적 양자화 적용 중...")
         
         # CPU로 이동 (양자화는 CPU에서만 지원)
         model_device = next(model.parameters()).device
@@ -95,13 +95,13 @@ def apply_dynamic_quantization(model, dtype=torch.qint8, inplace=False):
         # 원래 device로 복원
         quantized_model = quantized_model.to(model_device)
         
-        print(f"   ✅ 동적 양자화 완료")
+        print("   ✅ 동적 양자화 완료")
         return quantized_model
     
     except RuntimeError as e:
         if "NoQEngine" in str(e):
-            print(f"   ❌ 양자화 엔진 오류: {e}")
-            print(f"      해결: torch 재설치 또는 다른 양자화 방식 사용")
+            print("   ❌ 양자화 엔진 오류: {}".format(e))
+            print("      해결: torch 재설치 또는 다른 양자화 방식 사용")
             return model
         else:
             raise
@@ -134,7 +134,7 @@ def apply_static_quantization(model, calibration_dataloader, device='cpu', inpla
         model = deepcopy(model)
     
     try:
-        print(f"   🔄 정적 양자화 준비 중...")
+        print("   🔄 정적 양자화 준비 중...")
         
         # CPU로 이동
         model_device = model.device if hasattr(model, 'device') else device
@@ -147,7 +147,7 @@ def apply_static_quantization(model, calibration_dataloader, device='cpu', inpla
         torch.quantization.prepare(model, inplace=True)
         
         # Calibration (범위 측정)
-        print(f"   📊 Calibration 진행 중...")
+        print("   📊 Calibration 진행 중...")
         model.eval()
         with torch.no_grad():
             for batch_idx, (imgs, caps) in enumerate(calibration_dataloader):
@@ -159,14 +159,14 @@ def apply_static_quantization(model, calibration_dataloader, device='cpu', inpla
                     _ = model(imgs)
                 
                 if (batch_idx + 1) % 10 == 0:
-                    print(f"      Calibration: {batch_idx + 1} batches")
+                    print("      Calibration: {} batches".format(batch_idx + 1))
                 
                 # 처음 50개 배치만 사용 (충분한 범위 측정)
                 if batch_idx >= 50:
                     break
         
         # Convert (양자화 적용)
-        print(f"   ✅ 정적 양자화 완료 (Calibration)")
+        print("   ✅ 정적 양자화 완료 (Calibration)")
         torch.quantization.convert(model, inplace=True)
         
         # 원래 device로 복원
@@ -174,7 +174,7 @@ def apply_static_quantization(model, calibration_dataloader, device='cpu', inpla
         return model
     
     except Exception as e:
-        print(f"   ❌ 정적 양자화 실패: {e}")
+        print("   ❌ 정적 양자화 실패: {}".format(e))
         return model
 
 
@@ -208,7 +208,7 @@ def apply_qat(model, train_dataloader, epochs=3, device='cpu',
         model = deepcopy(model)
     
     try:
-        print(f"   🔄 QAT 준비 중...")
+        print("   🔄 QAT 준비 중...")
         
         # CPU로 이동
         model_device = next(model.parameters()).device
@@ -232,13 +232,13 @@ def apply_qat(model, train_dataloader, epochs=3, device='cpu',
         criterion = torch.nn.CrossEntropyLoss()
         
         # QAT 학습 루프 (짧게, 3-5 에포크)
-        print(f"   📚 QAT 학습 시작 ({epochs} 에포크)...")
+        print("   📚 QAT 학습 시작 ({} 에포크)...".format(epochs))
         for epoch in range(epochs):
             total_loss = 0
             num_batches = 0
             
             for batch_idx, (imgs, caps) in enumerate(tqdm(train_dataloader, 
-                                                          desc=f"QAT Epoch {epoch+1}/{epochs}",
+                                                          desc="QAT Epoch {}/{}".format(epoch+1, epochs),
                                                           disable=True)):
                 imgs = imgs.cpu()
                 caps = caps.cpu()
@@ -265,10 +265,10 @@ def apply_qat(model, train_dataloader, epochs=3, device='cpu',
                     break
             
             avg_loss = total_loss / num_batches if num_batches > 0 else 0
-            print(f"      Epoch {epoch+1} Loss: {avg_loss:.4f}")
+            print("      Epoch {} Loss: {:.4f}".format(epoch+1, avg_loss))
         
         # Convert (양자화 적용)
-        print(f"   ✅ QAT 완료 (Convert)")
+        print("   ✅ QAT 완료 (Convert)")
         torch.quantization.convert(model, inplace=True)
         
         # 원래 device로 복원
@@ -276,7 +276,7 @@ def apply_qat(model, train_dataloader, epochs=3, device='cpu',
         return model
     
     except Exception as e:
-        print(f"   ❌ QAT 실패: {e}")
+        print("   ❌ QAT 실패: {}".format(e))
         return model
 
 
@@ -317,11 +317,11 @@ def print_quantization_stats(original_model, quantized_model):
     orig_size = (orig_params * 4) / (1024 * 1024)  # FP32
     quant_size = (quant_params * 1) / (1024 * 1024)  # INT8 (대략)
     
-    print(f"\n📊 양자화 통계:")
-    print(f"   원본 모델:")
-    print(f"      • 파라미터: {orig_params:,}")
-    print(f"      • 크기: {orig_size:.2f} MB (FP32)")
-    print(f"   양자화 모델:")
-    print(f"      • 파라미터: {quant_params:,}")
-    print(f"      • 크기: {quant_size:.2f} MB (INT8)")
-    print(f"      • 감소율: {(1 - quant_size/orig_size)*100:.1f}%")
+    print("\n📊 양자화 통계:")
+    print("   원본 모델:")
+    print("      • 파라미터: {}".format(orig_params))
+    print("      • 크기: {:.2f} MB (FP32)".format(orig_size))
+    print("   양자화 모델:")
+    print("      • 파라미터: {}".format(quant_params))
+    print("      • 크기: {:.2f} MB (INT8)".format(quant_size))
+    print("      • 감소율: {:.1f}%".format((1 - quant_size/orig_size)*100))

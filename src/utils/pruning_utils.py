@@ -38,7 +38,7 @@ def save_sparse_model(model, path):
         torch.save(state_dict, path)
         return True
     except Exception as e:
-        print(f"❌ 저장 실패: {e}")
+        print("❌ 저장 실패: {}".format(e))
         return False
 
 
@@ -143,7 +143,7 @@ def compute_channel_importance_hessian(weight, pruning_rate, dim=1, hessian_impo
 
 def compute_hessian_importance(model, layer, img_tensor, captions_batch, wm, rwm, device, num_samples=64):
     """Hessian 행렬을 근사하여 중요도 계산"""
-    print(f"      🔍 Hessian 계산 중 ({num_samples}개 샘플)...")
+    print("      🔍 Hessian 계산 중 ({}개 샘플)...".format(num_samples))
     model.eval()
     model.to(device)
     return None  # 기본 구현
@@ -161,7 +161,7 @@ def apply_magnitude_pruning(model, pruning_rate):
     pruned_model = deepcopy(model)
     pruned_model.eval()
     
-    print(f"   🔧 Magnitude-based Pruning 적용 (직접 마스킹, {pruning_rate*100:.0f}%)...")
+    print("   🔧 Magnitude-based Pruning 적용 (직접 마스킹, {:.0f}%)...".format(pruning_rate*100))
     
     # 1. 전체 모델의 모든 가중치를 수집
     all_weights = []
@@ -177,7 +177,7 @@ def apply_magnitude_pruning(model, pruning_rate):
                         weight_info.append((name, param_name, module, param.shape))
     
     if not all_weights:
-        print(f"   ⚠️ 프루닝할 가중치가 없습니다")
+        print("   ⚠️ 프루닝할 가중치가 없습니다")
         return pruned_model
     
     # 2. 전체 가중치를 하나로 병합하여 임계값 계산
@@ -190,10 +190,10 @@ def apply_magnitude_pruning(model, pruning_rate):
     if num_to_prune > 0:
         threshold = torch.kthvalue(all_weights_tensor, num_to_prune).values
     else:
-        threshold = float('inf')
+        threshold = float('in')
     
-    print(f"   📊 임계값: {threshold:.6f}")
-    print(f"   📊 제거 대상: {num_to_prune:,} / {total_weights:,} 개 가중치")
+    print("   📊 임계값: {:.6f}".format(threshold))
+    print("   📊 제거 대상: {:,} / {:,} 개 가중치".format(num_to_prune, total_weights))
     
     # 4. 마스크를 모델에 저장
     pruned_model._magnitude_pruning_masks = {}
@@ -205,7 +205,7 @@ def apply_magnitude_pruning(model, pruning_rate):
         magnitude = param.data.abs()
         mask = (magnitude > threshold).float()
         
-        mask_key = f"{name}_{param_name}"
+        mask_key = "{}_{}".format(name, param_name)
         pruned_model._magnitude_pruning_masks[mask_key] = (module, param_name, mask.clone())
         param.data = param.data * mask
         
@@ -213,7 +213,7 @@ def apply_magnitude_pruning(model, pruning_rate):
         total_pruned += pruned_count
         
         if pruned_count > 0:
-            print(f"   ✅ {name}.{param_name}: {pruned_count:,}개 가중치 제거 ({pruned_count/magnitude.numel()*100:.1f}%)")
+            print("   ✅ {}.{}: {:,}개 가중치 제거 ({:.1f}%)".format(name, param_name, pruned_count, pruned_count/magnitude.numel()*100))
     
     pruned_model.eval()
     
@@ -223,8 +223,8 @@ def apply_magnitude_pruning(model, pruning_rate):
     total_params = sum(p.numel() for p in pruned_model.parameters())
     actual_reduction = (1 - new_nonzero / old_params) * 100
     
-    print(f"   ✂️ Magnitude Pruning 완료 (직접 마스킹)")
-    print(f"   📊 희소성: {actual_reduction:.1f}% (0인 가중치: {total_params - new_nonzero:,} / {total_params:,})")
+    print("   ✂️ Magnitude Pruning 완료 (직접 마스킹)")
+    print("   📊 희소성: {:.1f}% (0인 가중치: {:,} / {:,})".format(actual_reduction, total_params - new_nonzero, total_params))
     
     return pruned_model
 
@@ -241,32 +241,31 @@ def apply_structured_pruning(model, pruning_rate, img_tensor=None, device=None, 
     pruned_model = deepcopy(model)
     pruned_model.eval()
     
-    print(f"\n   📊 파라미터 분석:")
+    print("\n   📊 파라미터 분석:")
     total_params = sum(p.numel() for p in pruned_model.parameters())
     
     if hasattr(pruned_model, 'encoder'):
         encoder_params = sum(p.numel() for p in pruned_model.encoder.parameters())
-        print(f"      Encoder: {encoder_params:,} ({100*encoder_params/total_params:.1f}%)")
+        print("      Encoder: {:,} ({:.1f}%)".format(encoder_params, 100*encoder_params/total_params))
     
     if hasattr(pruned_model, 'decoder'):
         decoder_params = sum(p.numel() for p in pruned_model.decoder.parameters())
-        print(f"      Decoder: {decoder_params:,} ({100*decoder_params/total_params:.1f}%)")
+        print("      Decoder: {:,} ({:.1f}%)".format(decoder_params, 100*decoder_params/total_params))
         
         if hasattr(pruned_model.decoder, 'decode_step'):
             gru_params = sum(p.numel() for p in pruned_model.decoder.decode_step.parameters())
-            print(f"         └─ GRU Cell: {gru_params:,} ({100*gru_params/total_params:.1f}%)")
-    
+            print("         └─ GRU Cell: {:,} ({:.1f}%)".format(gru_params, 100*gru_params/total_params))
     decoder = pruned_model.decoder
     
     # GRU Hidden State 축소
-    print(f"\n   🎯 GRU Hidden State 점진적 축소 ({pruning_rate*100:.0f}%)")
+    print("\n   🎯 GRU Hidden State 점진적 축소 ({:.0f}%)".format(pruning_rate*100))
     
     if hasattr(decoder, 'decode_step'):
         old_gru = decoder.decode_step
         old_hidden_size = old_gru.hidden_size
         new_hidden_size = int(old_hidden_size * (1 - pruning_rate))
         
-        print(f"      GRU Hidden Size: {old_hidden_size} → {new_hidden_size}")
+        print("      GRU Hidden Size: {} → {}".format(old_hidden_size, new_hidden_size))
         
         # Hessian 기반 중요 뉴런 선택
         if use_hessian and device is not None:
@@ -285,9 +284,9 @@ def apply_structured_pruning(model, pruning_rate, img_tensor=None, device=None, 
                 
                 _, indices_to_keep = torch.topk(importance, new_hidden_size)
                 indices_to_keep = torch.sort(indices_to_keep)[0]
-                print(f"      ✅ Hessian 기반 중요 뉴런 선택 완료")
+                print("      ✅ Hessian 기반 중요 뉴런 선택 완료")
             except Exception as e:
-                print(f"      ⚠️ Hessian 계산 실패: {e}")
+                print("      ⚠️ Hessian 계산 실패: {}".format(e))
                 indices_to_keep = torch.arange(new_hidden_size, device=device)
         else:
             indices_to_keep = torch.arange(new_hidden_size, device=device if device else 'cpu')
@@ -357,7 +356,7 @@ def apply_structured_pruning(model, pruning_rate, img_tensor=None, device=None, 
         mask_attention_dim = compute_channel_importance_hessian(weight, pruning_rate, dim=0)
         new_attention_dim = mask_attention_dim.sum().item()
         
-        print(f"   📊 Attention Dim: {weight.shape[0]} → {new_attention_dim}")
+        print("   📊 Attention Dim: {:,} → {:,}".format(weight.shape[0], new_attention_dim))
         
         decoder.encoder_att = update_linear_layer(decoder.encoder_att, mask_out=mask_attention_dim, in_size=decoder.encoder_dim)
         decoder.attention_dim = new_attention_dim
@@ -380,8 +379,8 @@ def apply_structured_pruning(model, pruning_rate, img_tensor=None, device=None, 
     new_params = sum(p.numel() for p in pruned_model.parameters())
     reduction = (1 - new_params / old_params) * 100
     
-    print(f"   ✂️ Structured Pruning 완료: {pruning_rate*100:.0f}% 프루닝")
-    print(f"   📊 파라미터 감소: {old_params:,} → {new_params:,} ({reduction:.1f}% 감소)")
+    print("   ✂️ Structured Pruning 완료: {:.0f}% 프루닝".format(pruning_rate*100))
+    print("   📊 파라미터 감소: {} → {} ({}% 감소)".format(old_params, new_params, reduction))
     
     return pruned_model
     

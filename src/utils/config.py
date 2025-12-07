@@ -18,7 +18,7 @@ def setup_device():
     if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         device = torch.device("mps")
     # device=torch.device("cpu")
-    print(f"🚀 실행 디바이스: {device}")
+    print("🚀 실행 디바이스: {}".format(device))
     return device
 
 def setup_matplotlib():

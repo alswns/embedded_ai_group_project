@@ -66,10 +66,10 @@ if IS_COLAB:
     MODEL_SAVE_DIR = os.path.join(BASE_DIR, "models")
     ASSETS_DIR = os.path.join(BASE_DIR, "assets")
     
-    print(f"🔵 Colab 환경 감지됨")
-    print(f"   이미지 경로: {IMAGES_DIR}")
-    print(f"   캡션 파일: {CAPTIONS_FILE}")
-    print(f"   모델 저장 경로: {MODEL_SAVE_DIR}")
+    print("🔵 Colab 환경 감지됨")
+    print("   이미지 경로: {}".format(IMAGES_DIR))
+    print("   캡션 파일: {}".format(CAPTIONS_FILE))
+    print("   모델 저장 경로: {}".format(MODEL_SAVE_DIR))
     
     # 모델 저장 디렉토리 생성
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
@@ -79,7 +79,7 @@ else:
     CAPTIONS_FILE = "assets/captions.txt"
     MODEL_SAVE_DIR = "models"  # models 폴더에 저장
     ASSETS_DIR = "assets"
-    print(f"🟢 로컬 환경")
+    print("🟢 로컬 환경")
     
     # 모델 저장 디렉토리 생성
     os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
@@ -91,7 +91,7 @@ USE_PRETRAINED_EMBEDDING = True  # 사전 학습된 임베딩 사용 여부
 # GloVe 파일 경로 (assets 하위에 위치)
 # 파일을 assets/glove.6B.300d.txt 위치에 저장
 GLOVE_PATH = os.path.join(ASSETS_DIR, "glove.6B.300d.txt")
-GLOVE_OPTIMIZED_PATH = os.path.join(ASSETS_DIR, f"glove_optimized.pkl")
+GLOVE_OPTIMIZED_PATH = os.path.join(ASSETS_DIR, "glove_optimized.pkl")
 
 # --- [1] 이미지 전처리 ---
 transform = transforms.Compose([
@@ -208,8 +208,8 @@ class CaptionDataset(Dataset):
                         if caption:
                             self.image_caption_pairs.append((img_file, caption))
         
-        print(f"로드된 데이터: {len(self.image_caption_pairs)}개의 이미지-캡션 쌍")
-        print(f"고유 이미지 수: {len(set([pair[0] for pair in self.image_caption_pairs]))}")
+        print("로드된 데이터: {}개의 이미지-캡션 쌍".format(len(self.image_caption_pairs)))
+        print("고유 이미지 수: {}".format(len(set([pair[0] for pair in self.image_caption_pairs]))))
         
     def __getitem__(self, idx):
         # 이미지 로드
@@ -221,7 +221,7 @@ class CaptionDataset(Dataset):
             if self.transform:
                 image = self.transform(image)
         except Exception as e:
-            print(f"이미지 로드 실패: {img_path}, 오류: {e}")
+            print("이미지 로드 실패: {}, 오류: {}".format(img_path, e))
             # 오류 시 검은 이미지 반환
             image = torch.zeros(3, 224, 224)
         # 캡션 인코딩
@@ -240,7 +240,7 @@ class CaptionDataset(Dataset):
 def train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scaler=None, use_mixed_precision=False):
     model.train() # 학습 모드 설정
     total_loss = 0
-    for i, (imgs, caps) in enumerate(tqdm(dataloader, desc=f"Training Epoch {epoch+1}")):
+    for i, (imgs, caps) in enumerate(tqdm(dataloader, desc="Training Epoch {}".format(epoch+1))):
         imgs = imgs.to(device, non_blocking=True)
         caps = caps.to(device, non_blocking=True)
         
@@ -310,7 +310,7 @@ def train_epoch(model, dataloader, criterion, optimizer, epoch, vocab_size, scal
         total_loss += loss.item()
         
         # if i % 10 == 0:
-        #     print(f"Epoch [{epoch+1}/{EPOCHS}], Step [{i}/{len(dataloader)}], Loss: {loss.item():.4f}")
+        #     print("Epoch [{}/{}], Step [{}/{}], Loss: {}".format(epoch+1, EPOCHS, i, len(dataloader), loss.item():.4f))
     return total_loss / len(dataloader)
 
 # --- [2.5] 검증 함수 정의 ---
@@ -366,7 +366,7 @@ def validate_epoch(model, val_dataloader, criterion, epoch, vocab_size, word_map
                     meteor_scores.append(0.0)
             
             if i % 10 == 0:
-                print(f"  Validation Step [{i}/{len(val_dataloader)}], Loss: {loss.item():.4f}")
+                print("  Validation Step [{}/{}], Loss: {}".format(i, len(val_dataloader), loss.item():.4f))
     
     avg_val_loss = total_val_loss / len(val_dataloader)
     avg_meteor = sum(meteor_scores) / len(meteor_scores) if meteor_scores else 0.0
@@ -385,9 +385,9 @@ def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_sample
     # 전체 val 데이터셋 사용 (num_samples는 무시)
     total_samples = len(dataset)
     
-    print(f"\n{'='*70}")
-    print(f"🔍 검증 데이터셋 평가: {total_samples}개 샘플의 평균 METEOR 계산")
-    print(f"{'='*70}")
+    print("\n{'='*70}")
+    print("🔍 검증 데이터셋 평가: {}개 샘플의 평균 METEOR 계산".format(total_samples))
+    print("{'='*70}")
     
     with torch.no_grad():
         for i in range(total_samples):
@@ -417,27 +417,27 @@ def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_sample
                 # 진행도 표시 (100개마다)
                 if (i + 1) % 100 == 0:
                     current_avg = sum(meteor_scores) / len(meteor_scores)
-                    print(f"  진행: {i+1}/{total_samples}, 현재 평균 METEOR: {current_avg:.4f}")
+                    print("  진행: {}/{}, 현재 평균 METEOR: {}".format(i+1, total_samples, current_avg:.4f))
                     
             except Exception as e:
-                print(f"  ⚠️ 샘플 {i+1} 생성 실패: {e}")
+                print("  ⚠️ 샘플 {} 생성 실패: {}".format(i+1, e))
                 meteor_scores.append(0.0)
     
     # 전체 평균 METEOR 점수
     avg_meteor = sum(meteor_scores) / len(meteor_scores) if meteor_scores else 0.0
     
-    print(f"\n{'='*70}")
-    print(f"📈 검증 데이터셋 METEOR 통계:")
-    print(f"  • 평가 샘플: {total_samples}개")
-    print(f"  • 평균 METEOR 점수: {avg_meteor:.4f}")
+    print("\n{'='*70}")
+    print("📈 검증 데이터셋 METEOR 통계:")
+    print("  • 평가 샘플: {}개".format(total_samples))
+    print("  • 평균 METEOR 점수: {}".format(avg_meteor:.4f))
     if meteor_scores:
-        print(f"  • 최고 METEOR 점수: {max(meteor_scores):.4f}")
-        print(f"  • 최저 METEOR 점수: {min(meteor_scores):.4f}")
-        print(f"  • METEOR 점수 분포:")
-        print(f"    - 0.5 이상 (우수): {sum([1 for s in meteor_scores if s >= 0.5])}개")
-        print(f"    - 0.3-0.5 (양호): {sum([1 for s in meteor_scores if 0.3 <= s < 0.5])}개")
-        print(f"    - 0.3 미만 (개선 필요): {sum([1 for s in meteor_scores if s < 0.3])}개")
-    print(f"{'='*70}\n")
+        print("  • 최고 METEOR 점수: {}".format(max(meteor_scores):.4f))
+        print("  • 최저 METEOR 점수: {}".format(min(meteor_scores):.4f))
+        print("  • METEOR 점수 분포:")
+        print("    - 0.5 이상 (우수): {}개".format(sum([1 for s in meteor_scores if s >= 0.5])))
+        print("    - 0.3-0.5 (양호): {}개".format(sum([1 for s in meteor_scores if 0.3 <= s < 0.5])))
+        print("    - 0.3 미만 (개선 필요): {}개".format(sum([1 for s in meteor_scores if s < 0.3])))
+    print("{'='*70}\n")
     
     model.train()  # 다시 학습 모드로
     
@@ -481,8 +481,8 @@ def main():
     
     word_map, rev_word_map = build_vocab(captions_list, min_freq=MIN_WORD_FREQ)
     vocab_size = len(word_map)
-    print(f"단어장 크기: {vocab_size}")
-    print(f"주요 단어 예시: {list(word_map.items())[:10]}")
+    print("단어장 크기: {}".format(vocab_size))
+    print("주요 단어 예시: {}".format(list(word_map.items())[:10]))
     
     # 사전 학습된 임베딩 로드 (유틸 함수 사용)
     use_pretrained = USE_PRETRAINED_EMBEDDING
@@ -516,7 +516,7 @@ def main():
     )
     
     if len(dataset) == 0:
-        raise ValueError(f"데이터셋이 비어있습니다. {IMAGES_DIR} 폴더에 이미지가 있는지 확인하세요.")
+        raise ValueError("데이터셋이 비어있습니다. {} 폴더에 이미지가 있는지 확인하세요.".format(IMAGES_DIR))
     
     # 검증 셋 분리 (80% 학습, 20% 검증)
     val_split_ratio = 0.1
@@ -530,9 +530,9 @@ def main():
         [train_size, val_size]
     )
     
-    print(f"✅ 데이터셋 분할 완료:")
-    print(f"   • 학습 셋: {len(train_dataset)}개 샘플")
-    print(f"   • 검증 셋: {len(val_dataset)}개 샘플")
+    print("✅ 데이터셋 분할 완료:")
+    print("   • 학습 셋: {}개 샘플".format(len(train_dataset)))
+    print("   • 검증 셋: {}개 샘플".format(len(val_dataset)))
     
     # 최적화된 DataLoader 설정
     train_dataloader = DataLoader(
@@ -572,19 +572,19 @@ def main():
     checkpoint_path = os.path.join(MODEL_SAVE_DIR, "lightweight_captioning_model.pth")
     start_epoch = 0
     if os.path.exists(checkpoint_path):
-        print(f"📂 체크포인트 발견: {checkpoint_path}")
+        print("📂 체크포인트 발견: {}".format(checkpoint_path))
         try:
             checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
             if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['model_state_dict'])
                 start_epoch = checkpoint.get('epoch', 0)
-                print(f"✅ 체크포인트에서 모델 로드 완료 (Epoch {start_epoch}부터 이어서 학습)")
+                print("✅ 체크포인트에서 모델 로드 완료 (Epoch {}부터 이어서 학습)".format(start_epoch))
             else:
                 # 딕셔너리가 아닌 경우 (구버전 체크포인트)
                 model.load_state_dict(checkpoint)
-                print(f"✅ 체크포인트에서 모델 로드 완료")
+                print("✅ 체크포인트에서 모델 로드 완료")
         except Exception as e:
-            print(f"⚠️ 체크포인트 로드 실패: {e}")
+            print("⚠️ 체크포인트 로드 실패: {}".format(e))
             print("   새로 학습을 시작합니다.")
     else:
         print("📝 체크포인트 없음 - 새로 학습 시작")
@@ -626,8 +626,8 @@ def main():
             use_mixed_precision = False
     
     # 8. 학습 루프
-    print(f"학습 시작 (Encoder Frozen)... 총 {len(train_dataset)}개 샘플, {EPOCHS} 에포크")
-    print(f"배치 크기: {BATCH_SIZE}, 디바이스: {device}, Mixed Precision: {use_mixed_precision}")
+    print("학습 시작 (Encoder Frozen)... 총 {}개 샘플, {} 에포크".format(len(train_dataset), EPOCHS))
+    print("배치 크기: {}, 디바이스: {}, Mixed Precision: {}".format(BATCH_SIZE, device, use_mixed_precision))
     
     # 검증 설정
     VAL_NUM_SAMPLES = max(5, len(val_dataset))  # 검증에 사용할 샘플 수
@@ -638,29 +638,29 @@ def main():
     
     # 체크포인트에서 이어서 학습하는 경우
     for epoch in range(start_epoch, EPOCHS):
-        print(f"\n{'='*70}")
-        print(f"Epoch {epoch+1}/{EPOCHS} 시작")
-        print(f"{'='*70}")
+        print("\n{'='*70}")
+        print("Epoch {}/{} 시작".format(epoch+1, EPOCHS))
+        print("{'='*70}")
         
         # 학습 에포크
         avg_train_loss = train_epoch(model, train_dataloader, criterion, optimizer, epoch, vocab_size, scaler, use_mixed_precision)
         train_losses.append(avg_train_loss)
-        print(f"✅ 학습 완료. 평균 Loss: {avg_train_loss:.4f}")
+        print("✅ 학습 완료. 평균 Loss: {}".format(avg_train_loss:.4f))
         
         # 검증 에포크 (Loss + METEOR 점수 계산)
-        print(f"\n🔍 검증 시작...")
+        print("\n🔍 검증 시작...")
         avg_val_loss, avg_meteor = validate_epoch(
             model, val_dataloader, criterion, epoch, vocab_size, 
             word_map=word_map, rev_word_map=rev_word_map
         )
         val_losses.append(avg_val_loss)
-        print(f"✅ 검증 완료. 평균 Loss: {avg_val_loss:.4f}")
-        print(f"⭐ 평균 METEOR: {avg_meteor:.4f}")
+        print("✅ 검증 완료. 평균 Loss: {}".format(avg_val_loss:.4f))
+        print("⭐ 평균 METEOR: {}".format(avg_meteor:.4f))
         
         # 스케줄러 업데이트 (METEOR 점수 기반)
         scheduler.step(avg_meteor)
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"📊 스케줄러 업데이트 - METEOR: {avg_meteor:.4f}, Learning Rate: {current_lr:.2e}")
+        print("📊 스케줄러 업데이트 - METEOR: {}, Learning Rate: {}".format(avg_meteor:.4f, current_lr:.2e))
         
         # [옵션] 특정 Epoch 이후에 인코더도 같이 학습시키고 싶다면? (Fine-tuning)
         if ENCODER_FINE_TUNING and epoch == 5:
@@ -679,7 +679,7 @@ def main():
             )
 
         # 주기적으로 모델 저장
-        save_path = os.path.join(MODEL_SAVE_DIR, f"lightweight_captioning_model_{epoch+1}_epoch_meteor_{avg_meteor:.4f}.pth")
+        save_path = os.path.join(MODEL_SAVE_DIR, "lightweight_captioning_model_{}_epoch_meteor_{}.pth".format(epoch+1, avg_meteor:.4f))
         try:
             torch.save({
                 'model_state_dict': model.state_dict(),
@@ -690,12 +690,12 @@ def main():
                 'train_loss': avg_train_loss,
                 'val_loss': avg_val_loss
             }, save_path)
-            print(f"✅ 모델 저장 완료: {save_path}")
+            print("✅ 모델 저장 완료: {}".format(save_path))
         except Exception as e:
-            print(f"❌ 모델 저장 실패: {e}")
-            print(f"   저장 경로: {save_path}")
+            print("❌ 모델 저장 실패: {}".format(e))
+            print("   저장 경로: {}".format(save_path))
         
-        print(f"{'='*70}\n")
+        print("{'='*70}\n")
     
     # 8. 최종 모델 저장
     final_save_path = os.path.join(MODEL_SAVE_DIR, "lightweight_captioning_model.pth")
@@ -709,21 +709,21 @@ def main():
             'train_losses': train_losses,
             'val_losses': val_losses
         }, final_save_path)
-        print(f"\n✅ 최종 모델 저장 완료: {final_save_path}")
+        print("\n✅ 최종 모델 저장 완료: {}".format(final_save_path))
         
         # 학습 통계 출력
-        print(f"\n{'='*70}")
-        print(f"📊 학습 완료 통계:")
-        print(f"{'='*70}")
-        print(f"  • 최종 학습 손실: {train_losses[-1]:.4f}")
-        print(f"  • 최종 검증 손실: {val_losses[-1]:.4f}")
-        print(f"  • 최소 검증 손실: {min(val_losses):.4f} (Epoch {val_losses.index(min(val_losses))+1})")
-        print(f"  • 학습 손실 개선도: {((train_losses[0]-train_losses[-1])/train_losses[0]*100):.2f}%")
-        print(f"  • 검증 손실 개선도: {((val_losses[0]-val_losses[-1])/val_losses[0]*100):.2f}%")
-        print(f"{'='*70}\n")
+        print("\n{'='*70}")
+        print("📊 학습 완료 통계:")
+        print("{'='*70}")
+        print("  • 최종 학습 손실: {}".format(train_losses[-1]:.4f))
+        print("  • 최종 검증 손실: {}".format(val_losses[-1]:.4f))
+        print("  • 최소 검증 손실: {} (Epoch {})".format(min(val_losses):.4f, val_losses.index(min(val_losses))+1))
+        print("  • 학습 손실 개선도: {}%".format(((train_losses[0]-train_losses[-1])/train_losses[0]*100):.2f))
+        print("  • 검증 손실 개선도: {}%".format(((val_losses[0]-val_losses[-1])/val_losses[0]*100):.2f))
+        print("{'='*70}\n")
     except Exception as e:
-        print(f"❌ 최종 모델 저장 실패: {e}")
-        print(f"   저장 경로: {final_save_path}")
+        print("❌ 최종 모델 저장 실패: {}".format(e))
+        print("   저장 경로: {}".format(final_save_path))
 
 if __name__ == "__main__":
     main()

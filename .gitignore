@@ -26,7 +26,6 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-pruning_results
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -210,3 +209,5 @@ __marimo__/
 
 # models
 models/
+# pruning_results
+#

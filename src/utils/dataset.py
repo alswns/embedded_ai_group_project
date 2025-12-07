@@ -105,7 +105,7 @@ def load_test_data(device, transform=None, test_image_dir=None, captions_file=No
             img_path = os.path.join(test_image_dir, filename)
             img = Image.open(img_path).convert('RGB')
             img_tensor = transform(img).unsqueeze(0).to(device)
-            print(f"📸 테스트 이미지: {filename}")
+            print("📸 테스트 이미지: {}".format(filename))
     
     if img_tensor is None:
         print("⚠️ 이미지를 찾을 수 없어 더미 데이터를 사용합니다.")
@@ -122,7 +122,7 @@ def load_test_data(device, transform=None, test_image_dir=None, captions_file=No
                         parts = line.split(',', 1)
                         if len(parts) == 2 and parts[0].strip() == filename:
                             ref_caption = parts[1].strip()
-                            print(f"📝 참조 캡션: {ref_caption}")
+                            print("📝 참조 캡션: {}".format(ref_caption))
                             break
     
     return img_tensor, ref_caption
@@ -148,7 +148,7 @@ def prepare_calibration_dataset(word_map, num_samples=100, test_image_dir=None, 
     calibration_captions = []
     
     if not os.path.exists(test_image_dir):
-        print(f"   ⚠️ 이미지 디렉토리가 없어 더미 데이터를 사용합니다.")
+        print("   ⚠️ 이미지 디렉토리가 없어 더미 데이터를 사용합니다.")
         for _ in range(num_samples):
             dummy_img = torch.randn(1, 3, 224, 224)
             calibration_images.append(dummy_img)
@@ -164,7 +164,7 @@ def prepare_calibration_dataset(word_map, num_samples=100, test_image_dir=None, 
                    if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
     
     if not image_files:
-        print(f"   ⚠️ 이미지가 없어 더미 데이터를 사용합니다.")
+        print("   ⚠️ 이미지가 없어 더미 데이터를 사용합니다.")
         for _ in range(num_samples):
             dummy_img = torch.randn(1, 3, 224, 224)
             calibration_images.append(dummy_img)
@@ -179,7 +179,7 @@ def prepare_calibration_dataset(word_map, num_samples=100, test_image_dir=None, 
     import random
     selected_files = random.sample(image_files, min(num_samples, len(image_files)))
     
-    print(f"   📊 Calibration 데이터셋 준비 중: {len(selected_files)}개 이미지")
+    print("   📊 Calibration 데이터셋 준비 중: {}개 이미지".format(len(selected_files)))
     
     for filename in selected_files:
         try:
@@ -195,7 +195,7 @@ def prepare_calibration_dataset(word_map, num_samples=100, test_image_dir=None, 
             ])
             calibration_captions.append(dummy_cap)
         except Exception as e:
-            print(f"   ⚠️ 이미지 로드 실패 ({filename}): {e}")
+            print("   ⚠️ 이미지 로드 실패 ({}): {}".format(filename, e))
             continue
     
     while len(calibration_images) < num_samples:
