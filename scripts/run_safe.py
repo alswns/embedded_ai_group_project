@@ -36,6 +36,7 @@ except ImportError as e:
 # 3. 프로젝트 모듈 (torchvision 없이)
 try:
     from src.utils.quantization_utils import apply_dynamic_quantization
+    print("✅ quantization_utils 로드 완료", file=sys.stderr)
     from src.utils.safe_model_loader import load_model_safe
     print("✅ 프로젝트 모듈 로드 완료", file=sys.stderr)
 except ImportError as e:
