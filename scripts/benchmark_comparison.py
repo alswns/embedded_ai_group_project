@@ -81,12 +81,6 @@ MODELS_CONFIG = {
         'pruned': False,
         'finetuned': False,
     },
-    'Base Model + Pruning': {
-        'path': 'pruning_results/Pruning_epoch_1_checkpoint.pt',
-        'quantize': False,
-        'pruned': True,
-        'finetuned': False,
-    },
     'Base Model + Pruning + FT': {
         'path': 'pruning_results/Pruning_epoch_1_checkpoint.pt',
         'quantize': False,
@@ -147,7 +141,7 @@ def load_model_with_config(config):
         Model = load_model_class()
         
         # 체크포인트 로드
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             word_map = checkpoint.get('word_map')
