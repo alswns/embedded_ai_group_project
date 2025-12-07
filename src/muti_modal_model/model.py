@@ -97,7 +97,7 @@ import gc
         
 #껍데기
 class Model(nn.Module):
-    def __init__(self, vocab_size, width_mult=1.0, embed_dim=256, decoder_dim=512, attention_dim=256):
+    def __init__(self, vocab_size, width_mult=1.0, embed_dim=256, decoder_dim=512, attention_dim=256, device=torch.device("cpu")):
         super(Model, self).__init__()
         
         # [A] 인코더 설정 (MobileNetV3 Small)

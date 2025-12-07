@@ -396,7 +396,7 @@ def load_model(model_choice):
                     decoder_dim, attention_dim), file=sys.stderr)
                 
                 # CPU 전환
-                model = model.cpu()
+                model = model.to(device)
                 model.eval()
                 
             except Exception as e:
@@ -447,7 +447,7 @@ def load_model(model_choice):
             
             # 모델 to CPU 명시
             try:
-                model = model.cpu()
+                model = model.to(device)
                 model.eval()
             except:
                 pass
@@ -515,7 +515,7 @@ def apply_quantization(model, quant_choice, model_name):
     if quant_choice == '1':
         # FP32 - 양자화 없음
         print("\n✅ FP32 (양자화 없음)")
-        model = model.cpu()
+        model = model.to(device)
         model.eval()
         return model, model_name
     
@@ -525,12 +525,12 @@ def apply_quantization(model, quant_choice, model_name):
         try:
             # CPU에서는 FP16이 지원되지 않으므로 FP32 유지
             print("⚠️  CPU에서는 FP16이 지원되지 않습니다. FP32로 유지합니다.")
-            model = model.cpu()
+            model = model.to(device)
             model.eval()
             return model, model_name
         except Exception as e:
             print("⚠️ FP16 변환 실패: {}".format(e))
-            model = model.cpu()
+            model = model.to(device)
             model.eval()
             return model, model_name
     
@@ -548,7 +548,7 @@ def apply_quantization(model, quant_choice, model_name):
                 return model, model_name
             
             # CPU 기반 INT8 양자화 (안전 버전)
-            model = model.cpu()
+            model = model.to(device)
             model.eval()
             
             # Dynamic Quantization 적용 (CPU 안전)
@@ -562,11 +562,11 @@ def apply_quantization(model, quant_choice, model_name):
                 return model, model_name
         except Exception as e:
             print("⚠️ INT8 양자화 실패: {}. 원본 모델로 계속합니다.".format(e))
-            model = model.cpu()
+            model = model.to(device)
             model.eval()
             return model, model_name
     
-    model = model.cpu()
+    model = model.to(device)
     model.eval()
     return model, model_name
 
@@ -579,8 +579,8 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
     """이미지로부터 캡션 생성"""
     image_tensor = None
     try:
-        # 모델을 CPU로 이동
-        model = model.cpu()
+        # 모델을 디바이스로 이동
+        model = model.to(device)
         model.eval()
         
         # 이미지 전처리
@@ -591,7 +591,7 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
         try:
             with torch.no_grad():
                 # 메모리 안전성을 위해 배치 크기 = 1로 제한
-                generated_words = model.generate(image_tensor, word_map, rev_word_map, max_len=50)
+                generated_words = model.generate(image_tensor, word_map, rev_word_map, max_len=50,device=device)
         except RuntimeError as e:
             print("경고: 추론 실패 - {}".format(e))
             gc.collect()
@@ -644,7 +644,7 @@ def main():
     model, model_name = apply_quantization(model, quant_choice, model_name)
     
     # CPU 모드 명시적 설정
-    model = model.cpu()
+    model = model.to(device)
     model.eval()
     
     # 성능 모니터 생성
