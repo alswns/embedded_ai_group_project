@@ -171,7 +171,6 @@ def lazy_load_quantization():
 # 간편 함수
 def load_model_class():
     """모델 클래스 로드"""
-    print('모델 클래스 로드 요청 받음', file=sys.stderr)
     return lazy_load_model_class()
 
 def load_quantization_func():

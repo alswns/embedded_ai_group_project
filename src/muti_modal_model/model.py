@@ -102,6 +102,7 @@ class Model(nn.Module):
         
         # [A] 인코더 설정 (MobileNetV3 Small)
         # width_mult를 조절해서 더 경량화 가능 (예: 0.5)
+        print("Initializing Model with width_mult={}".format(width_mult))
         from torchvision import models
         mobilenet = models.mobilenet_v3_small(weights=None, width_mult=width_mult)
         
