@@ -11,6 +11,7 @@ from torchvision import transforms
 from gtts import gTTS
 import pygame
 from src.muti_modal_model.model import MobileNetCaptioningModel
+from src.utils.quantization_utils import apply_dynamic_quantization
 
 # ============================================================================
 # 환경 설정
@@ -139,7 +140,7 @@ def select_model():
         path = model_info['path']
         exists = os.path.exists(path)
         status = "✅ 사용 가능" if exists else "❌ 없음"
-        print("{}. {model_info[".format(key)name']} {status}")
+        print("{}. {} {}".format(key, model_info['name'], status))
     
     print()
     while True:
