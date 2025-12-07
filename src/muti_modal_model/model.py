@@ -186,7 +186,6 @@ class Model(nn.Module):
                 input_word = predicted_id
                 
             return [rev_word_map[k] for k in seq]
-        
 
 def _make_divisible(v, divisor, min_value=None):
     if min_value is None:
@@ -196,159 +195,135 @@ def _make_divisible(v, divisor, min_value=None):
         new_v += divisor
     return new_v
 
-# 2. Activation Functions (Hard-Sigmoid, Hard-Swish)
-class Hsigmoid(nn.Module):
-    def __init__(self, inplace=True):
-        super(Hsigmoid, self).__init__()
-        self.relu = nn.ReLU6(inplace=inplace)
-    def forward(self, x):
-        return self.relu(x + 3) / 6
+def _make_divisible(v, divisor, min_value=None):
+    if min_value is None:
+        min_value = divisor
+    new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
+    if new_v < 0.9 * v:
+        new_v += divisor
+    return new_v
 
-class Hswish(nn.Module):
-    def __init__(self, inplace=True):
-        super(Hswish, self).__init__()
-        self.sigmoid = Hsigmoid(inplace=inplace)
-    def forward(self, x):
-        return x * self.sigmoid(x)
-
-# 3. Squeeze-and-Excitation (SE) Block
-# 채널 간의 중요도를 학습하여 성능을 높이는 모듈
-class SELayer(nn.Module):
-    def __init__(self, channel, reduction=4):
-        super(SELayer, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(channel, _make_divisible(channel // reduction, 8)),
-            nn.ReLU(inplace=True),
-            nn.Linear(_make_divisible(channel // reduction, 8), channel),
-            Hsigmoid()
-        )
+# 1. Activation Functions (Torchvision 명칭 준수)
+class SqueezeExcitation(nn.Module):
+    def __init__(self, input_channels, squeeze_channels):
+        super().__init__()
+        self.fc1 = nn.Conv2d(input_channels, squeeze_channels, 1)
+        self.fc2 = nn.Conv2d(squeeze_channels, input_channels, 1)
+        self.relu = nn.ReLU(inplace=True)
+        self.sigmoid = nn.Hardsigmoid(inplace=True)
 
     def forward(self, x):
-        b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y
+        scale = x.mean((2, 3), keepdim=True)
+        scale = self.fc1(scale)
+        scale = self.relu(scale)
+        scale = self.fc2(scale)
+        scale = self.sigmoid(scale)
+        return x * scale
 
-# 4. Inverted Residual Block (MobileNet의 핵심 빌딩 블록)
+# 2. InvertedResidual Block (Torchvision과 동일한 'block' 구조)
 class InvertedResidual(nn.Module):
-    def __init__(self, inp, oup, stride, exp, kernel, se, act):
-        super(InvertedResidual, self).__init__()
-        self.stride = stride
-        assert stride in [1, 2]
-
-        self.use_res_connect = self.stride == 1 and inp == oup
+    def __init__(self, inp, hidden_dim, oup, kernel_size, stride, use_se, use_hs):
+        super().__init__()
+        self.use_res_connect = stride == 1 and inp == oup
 
         layers = []
-        activation = Hswish if act == 'HS' else nn.ReLU
+        activation_layer = nn.Hardswish if use_hs else nn.ReLU
 
-        # Expansion (1x1 conv로 채널 뻥튀기)
-        if exp != inp:
+        # Expansion
+        if hidden_dim != inp:
             layers.append(nn.Sequential(
-                nn.Conv2d(inp, exp, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(exp),
-                activation(inplace=True)
+                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
+                nn.BatchNorm2d(hidden_dim),
+                activation_layer(inplace=True)
             ))
-        
-        # Depthwise Conv (채널별 연산)
+
+        # Depthwise
         layers.append(nn.Sequential(
-            nn.Conv2d(exp, exp, kernel, stride, (kernel-1)//2, groups=exp, bias=False),
-            nn.BatchNorm2d(exp),
-            activation(inplace=True)
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size, stride, (kernel_size - 1) // 2, groups=hidden_dim, bias=False),
+            nn.BatchNorm2d(hidden_dim),
+            activation_layer(inplace=True)
         ))
 
-        # SE Block (선택적 적용)
-        if se:
-            layers.append(SELayer(exp))
+        # Squeeze-and-Excitation
+        if use_se:
+            squeeze_channels = _make_divisible(hidden_dim // 4, 8)
+            layers.append(SqueezeExcitation(hidden_dim, squeeze_channels))
 
-        # Pointwise Linear Conv (다시 채널 줄이기, 활성화 함수 없음)
+        # Pointwise
         layers.append(nn.Sequential(
-            nn.Conv2d(exp, oup, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(oup),
+            nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(oup)
         ))
 
-        self.conv = nn.Sequential(*layers)
+        # 변수명 'block'이 torchvision 가중치 로드 시 핵심임
+        self.block = nn.Sequential(*layers)
 
     def forward(self, x):
+        result = self.block(x)
         if self.use_res_connect:
-            return x + self.conv(x)
-        else:
-            return self.conv(x)
+            result += x
+        return result
 
-# 5. MobileNetV3-Small 메인 클래스
+# 3. MobileNetV3 Main Class
 class MobileNetV3Small(nn.Module):
-    def __init__(self, num_classes=1000, width_mult=1.0):
-        super(MobileNetV3Small, self).__init__()
+    def __init__(self, num_classes=1000,width_mult=1.0):
+        super().__init__()
         
-        # 설정값: [kernel, exp_size, out_channels, use_se, activation, stride]
-        # 논문의 MobileNetV3-Small 사양표 그대로 구현
-        cfg = [
-            # k, exp, out,  se,     nl,  s 
-            [3, 16,  16,  True,  'RE', 2],
-            [3, 72,  24,  False, 'RE', 2],
-            [3, 88,  24,  False, 'RE', 1],
-            [5, 96,  40,  True,  'HS', 2],
-            [5, 240, 40,  True,  'HS', 1],
-            [5, 240, 40,  True,  'HS', 1],
-            [5, 120, 48,  True,  'HS', 1],
-            [5, 144, 48,  True,  'HS', 1],
-            [5, 288, 96,  True,  'HS', 2],
-            [5, 576, 96,  True,  'HS', 1],
-            [5, 576, 96,  True,  'HS', 1],
+        # features라는 이름으로 시퀀셜을 묶음 (torchvision 구조)
+        input_channels = 16
+        
+        # [kernel, hidden_dim, oup, use_se, use_hs, stride]
+        # torchvision.models.mobilenetv3small 사양 표
+        bneck_conf = [
+            [3, 16, 16, True, False, 2],
+            [3, 72, 24, False, False, 2],
+            [3, 88, 24, False, False, 1],
+            [5, 96, 40, True, True, 2],
+            [5, 240, 40, True, True, 1],
+            [5, 240, 40, True, True, 1],
+            [5, 120, 48, True, True, 1],
+            [5, 144, 48, True, True, 1],
+            [5, 288, 96, True, True, 2],
+            [5, 576, 96, True, True, 1],
+            [5, 576, 96, True, True, 1],
         ]
 
-        input_channel = _make_divisible(16 * width_mult, 8)
+        # First Layer (Layer 0)
         layers = [nn.Sequential(
-            nn.Conv2d(3, input_channel, 3, 2, 1, bias=False),
-            nn.BatchNorm2d(input_channel),
-            Hswish(inplace=True)
+            nn.Conv2d(3, input_channels, 3, 2, 1, bias=False),
+            nn.BatchNorm2d(input_channels),
+            nn.Hardswish(inplace=True)
         )]
 
-        # 블록 쌓기
-        for k, exp, out, se, nl, s in cfg:
-            output_channel = _make_divisible(out * width_mult, 8)
-            exp_channel = _make_divisible(exp * width_mult, 8)
-            layers.append(InvertedResidual(input_channel, output_channel, s, exp_channel, k, se, nl))
-            input_channel = output_channel
+        # Building InvertedResidual Blocks (Layer 1 ~ 11)
+        for i, (k, exp, oup, se, hs, s) in enumerate(bneck_conf):
+            layers.append(InvertedResidual(input_channels, exp, oup, k, s, se, hs))
+            input_channels = oup
         
-        # 마지막 Conv (Features 단계)
-        last_conv_channel = _make_divisible(576 * width_mult, 8)
+        # Last Convolution Layers (Layer 12, 13)
+        last_conv_input = input_channels
+        last_conv_output = _make_divisible(input_channels * 6, 8) # 576
         layers.append(nn.Sequential(
-            nn.Conv2d(input_channel, last_conv_channel, 1, 1, 0, bias=False),
-            nn.BatchNorm2d(last_conv_channel),
-            Hswish(inplace=True)
+            nn.Conv2d(last_conv_input, last_conv_output, 1, 1, 0, bias=False),
+            nn.BatchNorm2d(last_conv_output),
+            nn.Hardswish(inplace=True)
         ))
         
+        # torchvision은 'features'라는 이름으로 묶음
         self.features = nn.Sequential(*layers)
 
-        # Classifier
+        # Classification Layer (Torchvision 명칭: classifier)
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.classifier = nn.Sequential(
-            nn.Linear(last_conv_channel, 1024),
-            Hswish(inplace=True),
-            nn.Dropout(0.2),
+            nn.Linear(last_conv_output, 1024),
+            nn.Hardswish(inplace=True),
+            nn.Dropout(p=0.2, inplace=True),
             nn.Linear(1024, num_classes),
         )
 
-        # 가중치 초기화
-        self._initialize_weights()
-
     def forward(self, x):
-        x = self.features(x)  # [Batch, 576, 7, 7] (입력이 224일 때)
-        x = self.avgpool(x)   # [Batch, 576, 1, 1]
+        x = self.features(x)
+        x = self.avgpool(x)
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
-
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.zeros_(m.bias)

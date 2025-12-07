@@ -333,6 +333,16 @@ def load_model(model_choice):
             # 체크포인트에서 모델 크기 정보 추출
             state_dict = checkpoint['model_state_dict']
             
+            print("  📋 State dict 분석...", file=sys.stderr)
+            print("     키 개수: {}".format(len(state_dict)), file=sys.stderr)
+            
+            # ★ state_dict 키 출력 (디버깅)
+            for i, key in enumerate(list(state_dict.keys())[:5]):
+                shape = state_dict[key].shape
+                print("     [{}/{}] {}: {}".format(i+1, min(5, len(state_dict)), key, shape), file=sys.stderr)
+            if len(state_dict) > 5:
+                print("     ... 외 {}개".format(len(state_dict) - 5), file=sys.stderr)
+            
             # ★ 핵심: state_dict에서 **실제 프루닝된 크기** 추출
             decoder_dim = checkpoint.get('decoder_dim', 512)
             attention_dim = checkpoint.get('attention_dim', 256)
@@ -340,18 +350,27 @@ def load_model(model_choice):
             # state_dict에서 정확한 크기 추출 (프루닝된 실제 크기)
             if 'decoder.decode_step.weight_ih' in state_dict:
                 # GRU의 input_size: (hidden_size * 3) 이므로 역으로 계산
-                actual_decoder_dim = state_dict['decoder.decode_step.weight_ih'].shape[0] // 3
+                actual_size = state_dict['decoder.decode_step.weight_ih'].shape[0]
+                actual_decoder_dim = actual_size // 3
+                print("  🔍 decoder.decode_step.weight_ih 형태: {}".format(
+                    state_dict['decoder.decode_step.weight_ih'].shape), file=sys.stderr)
+                print("     계산된 decoder_dim: {}".format(actual_decoder_dim), file=sys.stderr)
                 decoder_dim = actual_decoder_dim
-                print("  📊 state_dict에서 decoder_dim 추출: {} (프루닝됨)".format(decoder_dim))
+            else:
+                print("  ⚠️  decoder.decode_step.weight_ih 없음!", file=sys.stderr)
             
             if 'decoder.encoder_att.weight' in state_dict:
                 actual_attention_dim = state_dict['decoder.encoder_att.weight'].shape[0]
+                print("  🔍 decoder.encoder_att.weight 형태: {}".format(
+                    state_dict['decoder.encoder_att.weight'].shape), file=sys.stderr)
+                print("     계산된 attention_dim: {}".format(actual_attention_dim), file=sys.stderr)
                 attention_dim = actual_attention_dim
-                print("  📊 state_dict에서 attention_dim 추출: {} (프루닝됨)".format(attention_dim))
+            else:
+                print("  ⚠️  decoder.encoder_att.weight 없음!", file=sys.stderr)
             
-            print("   📐 감지된 모델 구조 (프루닝된 크기):")
-            print("      • Decoder Dim: {} (프루닝됨)".format(decoder_dim))
-            print("      • Attention Dim: {} (프루닝됨)".format(attention_dim))
+            print("   📐 최종 감지된 모델 구조 (프루닝된 크기):")
+            print("      • Decoder Dim: {}".format(decoder_dim))
+            print("      • Attention Dim: {}".format(attention_dim))
             print("      • Vocab Size: {}".format(vocab_size))
             
             # ★ 올바른 크기(프루닝된 크기)로 모델 생성
@@ -382,19 +401,35 @@ def load_model(model_choice):
                 traceback.print_exc(file=sys.stderr)
                 return None, None, None, None
             
-            # state_dict 로드 (완벽한 크기 매칭 - strict=True 사용 가능)
+            # state_dict 로드 (완벽한 크기 매칭)
             print("  4️⃣  가중치 로드...", file=sys.stderr)
             try:
+                # ★ 먼저 모델의 state_dict 확인
+                model_state = model.state_dict()
+                print("     모델 state_dict 키: {}".format(len(model_state)), file=sys.stderr)
+                print("     로드할 state_dict 키: {}".format(len(state_dict)), file=sys.stderr)
+                
+                # ★ 누락된 키 확인
+                missing_keys = set(model_state.keys()) - set(state_dict.keys())
+                if missing_keys:
+                    print("     ⚠️  누락된 키: {}".format(missing_keys), file=sys.stderr)
+                
+                unexpected_keys = set(state_dict.keys()) - set(model_state.keys())
+                if unexpected_keys:
+                    print("     ⚠️  예상 외 키: {}".format(unexpected_keys), file=sys.stderr)
+                
                 # ★ strict=True 사용: 모든 레이어가 정확히 매칭되어야 함
                 model.load_state_dict(state_dict, strict=True)
                 print("     ✅ 완벽한 크기 매칭으로 로드 완료", file=sys.stderr)
             except Exception as e:
-                print("     ⚠️  strict=True 로드 실패, strict=False로 재시도: {}".format(e), file=sys.stderr)
+                print("     ⚠️  strict=True 로드 실패: {}".format(e), file=sys.stderr)
+                print("     strict=False로 재시도 중...", file=sys.stderr)
                 try:
                     model.load_state_dict(state_dict, strict=False)
-                    print("     ⚠️  일부 레이어만 로드됨", file=sys.stderr)
+                    print("     ⚠️  일부 레이어만 로드됨 (프루닝 효과 감소)", file=sys.stderr)
                 except Exception as e2:
                     print("     ❌ 가중치 로드 실패: {}".format(e2), file=sys.stderr)
+                    print("     모델을 무작위 초기화 상태로 사용합니다.", file=sys.stderr)
                     import traceback
                     traceback.print_exc(file=sys.stderr)
             
@@ -437,6 +472,7 @@ def load_model(model_choice):
         import traceback
         traceback.print_exc()
         return None, None, None, None
+    
 def gstreamer_pipeline(
     sensor_id=0,
     capture_width=1280,
