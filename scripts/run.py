@@ -49,50 +49,47 @@ print("✅ 모든 모듈 로드 완료", file=sys.stderr)
 # 환경 설정 (CRITICAL - 크래시 방지)
 # ============================================================================
 print("⚙️  환경 설정 중...", file=sys.stderr)
+os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True # 입력 크기가 고정(224x224)이므로 필수
 
-# GPU 완전 비활성화 (CPU 전용)
-os.environ['CUDA_VISIBLE_DEVICES'] = ''
-torch.backends.cudnn.enabled = False
-torch.backends.cudnn.benchmark = False
+# CPU/GPU 디바이스 자동 감지 및 강제 설정
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+    print("🚀 디바이스: GPU (NVIDIA Maxwell) 가속 모드", file=sys.stderr)
+else:
+    device = torch.device("cpu")
+    print("📍 디바이스: CPU (경고: 성능이 낮을 수 있음)", file=sys.stderr)
 
-# CPU 스레드 제한
-torch.set_num_threads(2)
-torch.set_num_interop_threads(1)
-
-# 디바이스 설정 (강제 CPU)
-device = torch.device("cpu")
-print("📍 디바이스: CPU (GPU 비활성화됨)", file=sys.stderr)
+# 스레드 최적화
+torch.set_num_threads(4)
+torch.set_num_interop_threads(4)
 
 sys.modules['numpy._core'] = np.core
 sys.modules['numpy._core.multiarray'] = np.core.multiarray
 # ============================================================================
 # 이미지 전처리 함수 (torchvision 대체)
 # ============================================================================
-def preprocess_image_manual(frame):
-    """torchvision 없이 이미지 전처리"""
-    # BGR → RGB
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    pil_image = Image.fromarray(rgb_frame)
+def preprocess_image_optimized(frame):
+    """Jetson Nano GPU 가속을 고려한 전처리 (PIL 배제)"""
+    # 1. OpenCV 하드웨어 최적화 리사이즈 (CPU 부하 감소)
+    img = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_LINEAR)
     
-    # 리사이즈
-    pil_image = pil_image.resize((224, 224), Image.BILINEAR)
+    # 2. BGR -> RGB 전환 및 정규화 (Numpy 벡터 연산)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     
-    # numpy array
-    image_array = np.array(pil_image, dtype=np.float32) / 255.0
+    # 3. 평균 및 표준편차 적용 (정규화)
+    img -= [0.485, 0.456, 0.406]
+    img /= [0.229, 0.224, 0.225]
     
-    # 정규화
-    image_array -= np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    image_array /= np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    # 4. CHW 변환 및 GPU 텐서 전송
+    img = np.transpose(img, (2, 0, 1))
+    tensor = torch.from_numpy(img).unsqueeze(0).to(device)
     
-    # CHW 형식
-    image_array = np.transpose(image_array, (2, 0, 1))
-    
-    # 텐서로 변환
-    image_tensor = torch.from_numpy(image_array).float().unsqueeze(0)
-    
-    return image_tensor
+    # 5. Half Precision (FP16) 적용 - Jetson Nano 성능의 핵심
+    return tensor.half() if device.type == 'cuda' else tensor
 
-preprocess_image = preprocess_image_manual
+preprocess_image = preprocess_image_optimized
 
 # 모델 경로 설정
 MODELS = {
@@ -388,6 +385,8 @@ def load_model(model_choice):
                     decoder_dim=decoder_dim,      # ★ 프루닝된 크기
                     attention_dim=attention_dim   # ★ 프루닝된 크기
                 )
+                del Model
+
                 print("     ✅ 생성 완료 (decoder_dim={}, attention_dim={})".format(
                     decoder_dim, attention_dim), file=sys.stderr)
                 
@@ -459,8 +458,8 @@ def load_model(model_choice):
             print("   경로: {}".format(model_path))
             print("   총 파라미터: {:,}개".format(param_count))
             print("   모델 크기: {:.2f} MB (FP32)".format(param_size))
-            print("   디코더 차원: {} (프루닝됨)".format(decoder_dim))
-            print("   어텐션 차원: {} (프루닝됨)".format(attention_dim))
+            print("   디코더 차원: {} ".format(decoder_dim))
+            print("   어텐션 차원: {} ".format(attention_dim))
             
             return model, word_map, rev_word_map, model_name
         else:
@@ -797,32 +796,6 @@ def main():
         elif key == ord('p'):
             monitor.print_stats()
             
-        elif key == ord('m'):
-            print("\n모델을 변경합니다...")
-            cap.release()
-            cv2.destroyAllWindows()
-            
-            model_choice = select_model()
-            model, word_map, rev_word_map, model_name = load_model(model_choice)
-            
-            if model is None:
-                print("❌ 모델을 로드할 수 없습니다.")
-                return
-            
-            # 양자화 선택 및 적용
-            quant_choice = select_quantization()
-            model, model_name = apply_quantization(model, quant_choice, model_name)
-            
-            current_model_name = model_name
-            last_caption = None
-            monitor = PerformanceMonitor(model)  # 새 모니터 생성
-            
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                print("❌ 카메라를 열 수 없습니다.")
-                return
-            
-            print("\n✅ {} 모델로 변경되었습니다.\n".format(model_name))
     
     cap.release()
     cv2.destroyAllWindows()
