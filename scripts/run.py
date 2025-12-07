@@ -322,19 +322,7 @@ def load_model(model_choice):
     
     try:
         print("\n📂 모델 로드 중: {}".format(model_path))
-        
-        # 프로젝트 모듈 실제 로드 (지연 로드)
-        print("  1️⃣  모델 클래스 로드...", file=sys.stderr)
-        try:
-            MobileNetCaptioningModel = _model_class_loader()
-            print("     ✅ 로드 완료", file=sys.stderr)
-        except Exception as e:
-            print("     ❌ 로드 실패: {}".format(e), file=sys.stderr)
-            return None, None, None, None
-        
-        print("  2️⃣  체크포인트 로드...", file=sys.stderr)
-        
-        # CPU에서 로드 (메모리 안전) - Python/PyTorch 버전 호환성
+
         try:
             # Python 3.11+: weights_only 파라미터 필요
             checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
@@ -372,6 +360,19 @@ def load_model(model_choice):
             
             # 올바른 크기로 모델 생성 (CPU에서만)
             try:
+                        
+                # 프로젝트 모듈 실제 로드 (지연 로드)
+                print(" 2️⃣  모델 클래스 로드...", file=sys.stderr)
+                try:
+                    MobileNetCaptioningModel = _model_class_loader()
+                    print("     ✅ 로드 완료", file=sys.stderr)
+                except Exception as e:
+                    print("     ❌ 로드 실패: {}".format(e), file=sys.stderr)
+                    return None, None, None, None
+                
+                print("  1️⃣  체크포인트 로드...", file=sys.stderr)
+                
+                # CPU에서 로드 (메모리 안전) - Python/PyTorch 버전 호환성
                 model = MobileNetCaptioningModel(
                     vocab_size=vocab_size, 
                     embed_dim=300,
