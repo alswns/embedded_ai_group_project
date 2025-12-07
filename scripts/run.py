@@ -37,9 +37,8 @@ try:
     import sys
     import os
     
-    # 경로 추가
-    if 'src' not in sys.modules:
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    #이용가능한 메모리양 출력
     
     from src.utils.memory_safe_import import load_model_class, load_quantization_func
     print("   ✅ 지연 로더 로드", file=sys.stderr)
