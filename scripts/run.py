@@ -7,17 +7,39 @@ import tempfile
 import time
 import psutil
 import gc
-from PIL import Image
-from torchvision import transforms
-from gtts import gTTS
-import pygame
-from src.muti_modal_model.model import MobileNetCaptioningModel
-from src.utils.quantization_utils import apply_dynamic_quantization
-from src.utils.model_utils import get_model_size_mb
-# ============================================================================
-# 환경 설정
-# ============================================================================
+import sys
 
+print("📦 모듈 로드 시작...", file=sys.stderr)
+
+try:
+    from PIL import Image
+    from torchvision import transforms
+    from gtts import gTTS
+    import pygame
+    from src.muti_modal_model.model import MobileNetCaptioningModel
+    from src.utils.quantization_utils import apply_dynamic_quantization
+    print("✅ 모든 모듈 로드 완료", file=sys.stderr)
+except ImportError as e:
+    print("❌ 모듈 로드 실패: {}".format(e), file=sys.stderr)
+    sys.exit(1)
+
+# ============================================================================
+# 환경 설정 (CRITICAL - 크래시 방지)
+# ============================================================================
+print("⚙️  환경 설정 중...", file=sys.stderr)
+
+# GPU 완전 비활성화 (CPU 전용)
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
+torch.backends.cudnn.enabled = False
+torch.backends.cudnn.benchmark = False
+
+# CPU 스레드 제한
+torch.set_num_threads(2)
+torch.set_num_interop_threads(1)
+
+# 디바이스 설정 (강제 CPU)
+device = torch.device("cpu")
+print("📍 디바이스: CPU (GPU 비활성화됨)", file=sys.stderr)
 
 # 모델 경로 설정
 MODELS = {
@@ -48,29 +70,18 @@ transform = transforms.Compose([
                        std=[0.229, 0.224, 0.225])
 ])
 
-import subprocess
-
-def set_jetson_max_performance():
-    """젯슨 나노의 전력을 MAX 모드로 설정 (root 권한 필요)"""
-    try:
-        # 전력 모드를 10W 모드로 변경 (Jetson Nano)
-        subprocess.run(['sudo', 'nvpmodel', '-m', '0'], check=True)
-        # 클럭 속도를 최대로 고정
-        subprocess.run(['sudo', 'jetson_clocks'], check=True)
-        print("🚀 젯슨 나노를 최고 성능 모드로 설정했습니다.")
-    except:
-        print("⚠️  전력 모드 변경 실패. (sudo 권한이 없거나 이미 설정됨)")
+print("✅ 환경 설정 완료", file=sys.stderr)
 # ============================================================================
 # 성능 모니터링 클래스
 # ============================================================================
 class PerformanceMonitor:
     """모델 성능 모니터링"""
-    def __init__(self,model):
+    def __init__(self):
         self.inference_times = []
         self.memory_usage = []
         self.gpu_memory = []
         self.process = psutil.Process(os.getpid())
-        print("모델 크기 {:.2f} MB".format(get_model_size_mb(model)))
+    
     def record_inference(self, inference_time):
         """추론 시간 기록"""
         self.inference_times.append(inference_time)
@@ -441,10 +452,8 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
 # 메인 실행 함수
 # ============================================================================
 def main():
-    set_jetson_max_performance()
     print("\n📊 Jetson Nano 이미지 캡셔닝 시스템")
     print("="*70)
-    
     
     # 모델 선택
     model_choice = select_model()
