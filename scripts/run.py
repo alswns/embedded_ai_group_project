@@ -34,12 +34,11 @@ except ImportError:
 print("   ℹ️  프로젝트 모듈 (지연 로드 준비)", file=sys.stderr)
 
 # 지연 로더 import (매우 간단함)
-from src.utils.memory_safe_import import load_model_class, load_quantization_func
+from src.utils.memory_safe_import import load_model_class
 print("   ✅ 지연 로더 로드", file=sys.stderr)
 
 # 아직 실제 로드는 안 됨
 _model_class_loader = load_model_class
-_quantization_loader = load_quantization_func
     
 
 
@@ -49,7 +48,6 @@ print("✅ 모든 모듈 로드 완료", file=sys.stderr)
 # 환경 설정 (CRITICAL - 크래시 방지)
 # ============================================================================
 print("⚙️  환경 설정 중...", file=sys.stderr)
-os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 torch.backends.cudnn.enabled = False  # 불안정성 방지
 torch.backends.cudnn.benchmark = True # 입력 크기가 고정(224x224)이므로 필수
 
@@ -67,34 +65,36 @@ torch.set_num_interop_threads(4)
 
 sys.modules['numpy._core'] = np.core
 sys.modules['numpy._core.multiarray'] = np.core.multiarray
+dtypes = torch.float32
 # ============================================================================
 # 이미지 전처리 함수 (torchvision 대체)
 # ============================================================================
-def preprocess_image_manual(frame):
-    """torchvision 없이 이미지 전처리"""
-    # BGR → RGB
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    pil_image = Image.fromarray(rgb_frame)
+def preprocess_image_optimized(frame):
+    """
+    Jetson Nano 최적화 전처리:
+    1. PIL 제거 (느림) -> OpenCV 사용 (빠름)
+    2. CPU 연산 최소화 -> GPU로 바로 업로드
+    """
+    # 1. OpenCV 리사이즈 (CPU 부하 감소)
+    img = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_LINEAR)
     
-    # 리사이즈
-    pil_image = pil_image.resize((224, 224), Image.BILINEAR)
+    # 2. BGR -> RGB 및 정규화 (Numpy)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     
-    # numpy array
-    image_array = np.array(pil_image, dtype=np.float32) / 255.0
+    # 3. 정규화 (Mean/Std)
+    img -= np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    img /= np.array([0.229, 0.224, 0.225], dtype=np.float32)
     
-    # 정규화
-    image_array -= np.array([0.485, 0.456, 0.406], dtype=np.float32)
-    image_array /= np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    # 4. (H, W, C) -> (C, H, W)
+    img = np.transpose(img, (2, 0, 1))
     
-    # CHW 형식
-    image_array = np.transpose(image_array, (2, 0, 1))
+    # 5. Tensor 변환 및 GPU 업로드
+    image_tensor = torch.from_numpy(img).unsqueeze(0).to(device)
     
-    # 텐서로 변환
-    image_tensor = torch.from_numpy(image_array).float().unsqueeze(0)
-    
-    return image_tensor
+    # ★ 핵심: GPU 모드일 경우 Half Precision(FP16) 적용
+    return image_tensor.float()
 
-preprocess_image = preprocess_image_manual
+preprocess_image = preprocess_image_optimized
 
 # 모델 경로 설정
 MODELS = {
@@ -114,7 +114,6 @@ MODELS = {
 QUANTIZE_OPTIONS = {
     '1': {'name': 'FP32 (원본)', 'enabled': False},
     '2': {'name': 'FP16 (Half Precision)', 'enabled': True},
-    '3': {'name': 'INT8 (Dynamic Quantization)', 'enabled': True}
 }
 
 print("✅ 환경 설정 완료", file=sys.stderr)
@@ -316,10 +315,10 @@ def load_model(model_choice):
         # CPU에서 로드 (메모리 안전) - Python/PyTorch 버전 호환성
         try:
             # Python 3.11+: weights_only 파라미터 필요
-            checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+            checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         except TypeError:
             # Python 3.6-3.10: weights_only 파라미터 미지원
-            checkpoint = torch.load(model_path, map_location='cpu')
+            checkpoint = torch.load(model_path, map_location=device)
         
         print("     ✅ 로드 완료", file=sys.stderr)
         
@@ -515,6 +514,7 @@ def apply_quantization(model, quant_choice, model_name):
     if quant_choice == '1':
         # FP32 - 양자화 없음
         print("\n✅ FP32 (양자화 없음)")
+        dtypes = torch.float32
         model = model.to(device)
         model.eval()
         return model, model_name
@@ -523,10 +523,11 @@ def apply_quantization(model, quant_choice, model_name):
         # FP16 - Half Precision (CPU에서는 제한적)
         print("\n📊 양자화 적용 중: {}".format(quant_name))
         try:
-            # CPU에서는 FP16이 지원되지 않으므로 FP32 유지
-            print("⚠️  CPU에서는 FP16이 지원되지 않습니다. FP32로 유지합니다.")
-            model = model.to(device)
+            dtypes = torch.float16
+            model = model.half().to(device)
             model.eval()
+            print("✅ FP16 변환 완료")
+            model_name = "{} + FP16".format(model_name)
             return model, model_name
         except Exception as e:
             print("⚠️ FP16 변환 실패: {}".format(e))
@@ -534,37 +535,6 @@ def apply_quantization(model, quant_choice, model_name):
             model.eval()
             return model, model_name
     
-    elif quant_choice == '3':
-        # INT8 - Dynamic Quantization
-        print("\n📊 양자화 적용 중: {}".format(quant_name))
-        try:
-            # 양자화 함수 로드 (지연 로드)
-            print("  양자화 함수 로드...", file=sys.stderr)
-            try:
-                apply_dynamic_quantization = _quantization_loader()
-                print("  ✅ 로드 완료", file=sys.stderr)
-            except Exception as e:
-                print("  ⚠️  로드 실패: {}".format(e), file=sys.stderr)
-                return model, model_name
-            
-            # CPU 기반 INT8 양자화 (안전 버전)
-            model = model.to(device)
-            model.eval()
-            
-            # Dynamic Quantization 적용 (CPU 안전)
-            try:
-                quantized_model = apply_dynamic_quantization(model)
-                print("✅ INT8 양자화 완료")
-                model_name = "{} + INT8".format(model_name)
-                return quantized_model, model_name
-            except Exception as e2:
-                print("⚠️  INT8 적용 실패, FP32로 진행합니다: {}".format(e2))
-                return model, model_name
-        except Exception as e:
-            print("⚠️ INT8 양자화 실패: {}. 원본 모델로 계속합니다.".format(e))
-            model = model.to(device)
-            model.eval()
-            return model, model_name
     
     model = model.to(device)
     model.eval()
@@ -582,7 +552,7 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
         # 모델을 디바이스로 이동
         model = model.to(device)
         model.eval()
-        
+        frame=frame.to(dtypes)
         # 이미지 전처리
         image_tensor = preprocess_image(frame)
         
@@ -643,9 +613,25 @@ def main():
     quant_choice = select_quantization()
     model, model_name = apply_quantization(model, quant_choice, model_name)
     
-    # CPU 모드 명시적 설정
-    model = model.to(device)
-    model.eval()
+    try:
+        # 더미 데이터 생성 (1, 3, 224, 224)
+        dummy_input = torch.zeros(1, 3, 224, 224).to(device)
+        if device.type == 'cuda':
+            dummy_input = dummy_input.half() # FP16 모드라면
+
+        # 강제로 한 번 실행시켜서 CUDA 커널을 깨움
+        with torch.no_grad():
+            # generate 함수가 아니라 encoder만 통과시켜도 효과 있음
+            if hasattr(model, 'encoder'):
+                _ = model.encoder(dummy_input)
+        
+        # GPU 동기화 (완료될 때까지 대기)
+        if device.type == 'cuda':
+            torch.cuda.synchronize()
+            
+        print("✅ 워밍업 완료! 이제 바로 캡션이 생성됩니다.")
+    except Exception as e:
+        print(f"⚠️ 워밍업 건너뜀: {e}")
     
     # 성능 모니터 생성
     try:

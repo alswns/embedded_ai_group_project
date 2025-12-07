@@ -11,12 +11,14 @@
 ### **✅ 최종 해결책: 극도로 단순화**
 
 #### **핵심 아이디어**
+
 ```python
 "복잡할수록 위험하다"
 → 최대한 단순하게 유지
 ```
 
 #### **모델 생성 코드**
+
 ```python
 # 메모리 정리 (단순하고 효과적)
 gc.collect()
@@ -39,16 +41,19 @@ model.eval()
 ### **📋 변경사항**
 
 #### **1. run.py 단순화**
+
 - ❌ safe_model_instantiation 함수 호출 제거
 - ✅ 직접 모델 생성으로 변경
 - ✅ try-except로 기본 에러 처리만 유지
 
 #### **2. 환경 설정 활성화**
+
 - ❌ 주석 처리된 device 설정
 - ✅ CPU 강제 설정 복원
 - ✅ PyTorch 메모리 최적화 설정
 
 #### **3. memory_safe_import.py 최소화**
+
 - ❌ 복잡한 aggressive_memory_cleanup
 - ✅ 단순 gc.collect() 만 유지
 - ✅ 필수 함수만 남김
@@ -95,12 +100,12 @@ try:
     gc.collect()
     gc.collect()
     gc.collect()
-    
+
     # 모델 생성
     model = MobileNetCaptioningModel(...)
     model = model.cpu()
     model.eval()
-    
+
 except Exception as e:
     print("❌ 생성 실패: {}".format(e))
     # 실패 시 None 반환 → 사용자 메시지
@@ -108,13 +113,13 @@ except Exception as e:
 
 ### **✨ 특징**
 
-| 항목 | 상태 |
-|:---|:---:|
-| **코드 단순성** | ✅ 최대 |
-| **안정성** | ✅ 최고 |
+| 항목             |  상태   |
+| :--------------- | :-----: |
+| **코드 단순성**  | ✅ 최대 |
+| **안정성**       | ✅ 최고 |
 | **세그멘테이션** | ❌ 제거 |
-| **메모리 효율** | ✅ 좋음 |
-| **Jetson 호환** | ✅ 완벽 |
+| **메모리 효율**  | ✅ 좋음 |
+| **Jetson 호환**  | ✅ 완벽 |
 
 ### **📊 메모리 사용**
 
@@ -143,11 +148,11 @@ After (단순 정리):
 
 ## 📁 최종 파일 상태
 
-| 파일 | 상태 | 비고 |
-|:---|:---:|:---|
-| `scripts/run.py` | ✅ 최적화 | 직접 모델 생성 |
-| `src/utils/memory_safe_import.py` | ⚠️ 사용 안 함 | 유지만 함 |
-| `src/utils/memory_safe_import_v2.py` | ✅ 신규 | 초경량 버전 |
+| 파일                                 |     상태      | 비고           |
+| :----------------------------------- | :-----------: | :------------- |
+| `scripts/run.py`                     |   ✅ 최적화   | 직접 모델 생성 |
+| `src/utils/memory_safe_import.py`    | ⚠️ 사용 안 함 | 유지만 함      |
+| `src/utils/memory_safe_import_v2.py` |    ✅ 신규    | 초경량 버전    |
 
 ---
 
