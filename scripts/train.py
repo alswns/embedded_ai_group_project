@@ -15,18 +15,11 @@ from tqdm import tqdm
 
 # 유틸리티 import
 from src.utils import (
-    setup_device,
-    get_image_transform,
     CaptionDataset as CaptionDatasetUtil,  # 유틸 버전 (필요시 사용)
     calculate_meteor,
-    METEOR_AVAILABLE,
 )
-from src.utils.glove_utils import (
-    load_glove_embeddings_with_fallback,
-    create_embedding_matrix
-)
+
 from src.utils.finetune_utils import (
-    load_model_checkpoint,
     save_checkpoint as save_checkpoint_util,
 )
 
@@ -484,26 +477,7 @@ def main():
     print("단어장 크기: {}".format(vocab_size))
     print("주요 단어 예시: {}".format(list(word_map.items())[:10]))
     
-    # 사전 학습된 임베딩 로드 (유틸 함수 사용)
-    use_pretrained = USE_PRETRAINED_EMBEDDING
-    glove_embeddings = None
-    actual_embed_dim = EMBED_DIM
     
-    if use_pretrained:
-        glove_embeddings, actual_embed_dim = load_glove_embeddings_with_fallback(
-            GLOVE_PATH, GLOVE_OPTIMIZED_PATH, EMBED_DIM
-        )
-        if glove_embeddings is None:
-            print("⚠️ 사전 학습된 임베딩을 사용할 수 없습니다. 랜덤 초기화를 사용합니다.")
-            use_pretrained = False
-    
-    # 임베딩 행렬 생성
-    embedding_matrix = None
-    if use_pretrained and glove_embeddings:
-        embedding_matrix = create_embedding_matrix(word_map, glove_embeddings, embed_dim=actual_embed_dim)
-    else:
-        # 랜덤 초기화 사용 시에도 embed_dim은 설정값 사용
-        pass
     
     # 2. 데이터셋 및 데이터 로더 준비
     print("데이터셋 로드 중...")

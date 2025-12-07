@@ -35,7 +35,6 @@ from src.utils import (
     calculate_meteor,
     run_benchmark,
     # Pruning
-    count_nonzero_parameters,
     apply_magnitude_pruning,
     apply_structured_pruning,
     # Finetune
@@ -99,8 +98,10 @@ transform = get_image_transform()
 # 벤치마크 래퍼
 # ============================================================================
 def quantize_benchmark(model, img_tensor, wm, rwm, ref_caption, baseline_params, results, label, val_dataloader=None):
-    q_model = apply_dynamic_quantization(model)
-    
+    # q_model = apply_dynamic_quantization(model)
+    print("\n   🔄 {} 양자화 벤치마크...".format(label))
+    q_model=q_model.half()
+    img_tensor=img_tensor.half()
     result = run_benchmark(q_model, img_tensor, wm, rwm, "{} Quantization".format(label),ref_caption=ref_caption,
     baseline_params=baseline_params,
     num_runs=NUM_RUNS,

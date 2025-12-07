@@ -18,6 +18,7 @@ import matplotlib
 import psutil
 import sys
 import warnings
+import cv2  
 warnings.filterwarnings("ignore")
 
 # ★ 영문 폰트만 사용 (한글 깨짐 방지)
@@ -27,12 +28,14 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 # 프로젝트 모듈
 from src.utils.memory_safe_import import load_model_class
 from src.utils.model_utils import get_model_size_mb
+from src.utils.metrics import calculate_meteor as calculate_meteor_score
+
 
 # ============================================================================
 # 설정
 # ============================================================================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-NUM_RUNS = 50  # 각 모델당 추론 횟수
+NUM_RUNS = 100  # 각 모델당 추론 횟수
 WARMUP_RUNS = 5  # 워밍업 횟수
 # ============================================================================
 # 환경 설정 (CRITICAL - 크래시 방지)
@@ -101,6 +104,36 @@ MODELS_CONFIG = {
 # ============================================================================
 # 모델 로드 함수
 # ============================================================================
+def preprocess_image_optimized(frame, quantize=False):
+    """
+    Jetson Nano 최적화 전처리:
+    1. PIL 제거 (느림) -> OpenCV 사용 (빠름)
+    2. CPU 연산 최소화 -> GPU로 바로 업로드
+    3. 모델 설정에 맞게 dtype 자동 변환
+    """
+    # 1. OpenCV 리사이즈 (CPU 부하 감소)
+    img = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_LINEAR)
+    
+    # 2. BGR -> RGB 및 정규화 (Numpy)
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    
+    # 3. 정규화 (Mean/Std)
+    img -= np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    img /= np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    
+    # 4. (H, W, C) -> (C, H, W)
+    img = np.transpose(img, (2, 0, 1))
+    
+    # 5. Tensor 변환 및 GPU 업로드
+    image_tensor = torch.from_numpy(img).unsqueeze(0).to(device)
+    
+    # ★ 핵심: 설정에 따라 dtype 변환
+    if quantize:
+        return image_tensor.half()  # FP16
+    else:
+        return image_tensor.float()  # FP32
+
+
 def load_model_with_config(config):
     """설정에 따라 모델 로드"""
     model_path = config['path']
@@ -168,9 +201,103 @@ def load_model_with_config(config):
         traceback.print_exc()
         return None, None, None
 
-# ============================================================================
-# FLOPs 계산 함수 (파라미터 기반 추정)
-# ============================================================================
+
+def load_test_dataset(test_dir='test'):
+    """
+    Test 데이터셋 로드 (이미지 + 참조 캡션)
+    """
+    images = []
+    captions = {}
+    
+    captions_file = os.path.join(test_dir, 'captions.txt')
+    images_dir = os.path.join(test_dir, 'images')
+    
+    if not os.path.exists(captions_file):
+        print("Test dataset not found")
+        return [], {}
+    
+    # 캡션 로드 (쉼표로 구분된 형식)
+    with open(captions_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            # 형식: image_name.jpg,caption text
+            parts = line.split(',', 1)  # 첫 번째 쉼표로만 분리
+            if len(parts) >= 2:
+                img_name = parts[0].strip()
+                caption = parts[1].strip()
+                captions[img_name] = caption
+    
+    # 이미지 경로 로드
+    if os.path.exists(images_dir):
+        images = sorted([f for f in os.listdir(images_dir) if f.endswith(('.jpg', '.png', '.jpeg'))])
+        images = [os.path.join(images_dir, img) for img in images if img in captions]
+    
+    print("Test dataset loaded: {} images".format(len(images)))
+    return images, captions
+
+
+    
+def calculate_meteor_from_test_data(model, word_map, rev_word_map, num_samples=100):
+    """
+    Test 데이터셋으로 METEOR 점수 계산
+    """
+    test_images, test_captions = load_test_dataset()
+    if not test_images:
+        print("  No test images found")
+        return 0.0
+    
+    # 샘플 선택 (처음 num_samples개)
+    sample_images = test_images[:min(num_samples, len(test_images))]
+    meteor_scores = []
+    
+    print("  Computing METEOR on {} samples...".format(len(sample_images)))
+    
+    with torch.no_grad():
+        for idx, img_path in enumerate(sample_images):
+            try:
+                # 이미지 로드 (OpenCV 사용)
+                img = cv2.imread(img_path)
+                if img is None:
+                    continue
+                
+                # 최적화된 전처리 함수 사용
+                img_tensor = preprocess_image_optimized(img)
+                
+                # 캡션 생성
+                generated_caption = None
+                try:
+                    generated_caption = model.generate(
+                        img_tensor, word_map, rev_word_map,
+                        max_len=50, device=device
+                    )
+                except Exception as e:
+                    continue
+                
+                # 참조 캡션
+                img_name = os.path.basename(img_path)
+                reference_caption = test_captions.get(img_name, '')
+                
+                if reference_caption and generated_caption:
+                    score = calculate_meteor_score(generated_caption, reference_caption)
+                    meteor_scores.append(score)
+                    
+                    if (idx + 1) % 5 == 0:
+                        print("    [{}/{}] METEOR: {:.4f}".format(idx + 1, len(sample_images), score))
+                    
+            except Exception as e:
+                continue
+    
+    # 평균 METEOR 점수
+    if meteor_scores:
+        avg_meteor = float(np.mean(meteor_scores))
+        print("  Average METEOR: {:.4f}".format(avg_meteor))
+        return avg_meteor
+    else:
+        print("  No valid METEOR scores computed")
+        return 0.0
+
 def calculate_flops(model):
     """
     모델의 FLOPs 계산 (파라미터 기반 추정)
@@ -196,7 +323,8 @@ class BenchmarkMetrics:
     """모델 성능 메트릭"""
     def __init__(self):
         self.inference_times = []
-        self.memory_usage = []
+        self.cpu_memory_usage = []
+        self.gpu_memory_usage = []
         self.process = psutil.Process(os.getpid())
     
     def record_inference(self, inf_time):
@@ -204,9 +332,19 @@ class BenchmarkMetrics:
         self.inference_times.append(inf_time)
     
     def record_memory(self):
-        """메모리 기록"""
-        mem = self.process.memory_info().rss / 1024 / 1024
-        self.memory_usage.append(mem)
+        """메모리 기록 (CPU + GPU)"""
+        cpu_mem = self.process.memory_info().rss / 1024 / 1024
+        self.cpu_memory_usage.append(cpu_mem)
+        
+        # GPU 메모리 기록
+        if device.type == 'cuda':
+            try:
+                gpu_mem = torch.cuda.memory_allocated() / 1024 / 1024
+                self.gpu_memory_usage.append(gpu_mem)
+            except:
+                self.gpu_memory_usage.append(0)
+        else:
+            self.gpu_memory_usage.append(0)
     
     def get_stats(self):
         """통계 계산"""
@@ -214,6 +352,9 @@ class BenchmarkMetrics:
             return None
         
         times = np.array(self.inference_times)
+        cpu_mem = np.mean(self.cpu_memory_usage) if self.cpu_memory_usage else 0
+        gpu_mem = np.mean(self.gpu_memory_usage) if self.gpu_memory_usage else 0
+        total_mem = cpu_mem + gpu_mem
         
         return {
             'mean_latency_ms': float(np.mean(times)),
@@ -221,10 +362,13 @@ class BenchmarkMetrics:
             'min_latency_ms': float(np.min(times)),
             'max_latency_ms': float(np.max(times)),
             'std_latency_ms': float(np.std(times)),
-            'cpu_memory_mb': float(np.mean(self.memory_usage) if self.memory_usage else 0),
+            'cpu_memory_mb': float(cpu_mem),
+            'gpu_memory_mb': float(gpu_mem),
+            'total_memory_mb': float(total_mem),
             'total_params': 0,
             'model_size_mb': 0,
             'flops_millions': 0,
+            'meteor_score': 0.0,
         }
 
 def benchmark_model(model, word_map, rev_word_map, model_name, config):
@@ -234,7 +378,13 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
     
     metrics = BenchmarkMetrics()
     
-    # 더미 입력 생성
+    # Test 데이터셋 로드 (실제 이미지)
+    test_images, test_captions = load_test_dataset()
+    if not test_images:
+        print("Test dataset not found, cannot benchmark")
+        return None
+    
+    # 더미 입력 생성 (워밍업용)
     dummy_input = torch.randn(1, 3, 224, 224).to(device)
     if config['quantize']:
         dummy_input = dummy_input.half()
@@ -248,50 +398,63 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
         torch.cuda.synchronize()
     print(" Done")
     
-    # 본 벤치마크
-    print("  Running {} iterations...".format(NUM_RUNS))
-    
-    # 더미 이미지 생성
-    dummy_frame = np.random.randint(0, 256, (480, 640, 3), dtype=np.uint8)
+    # 본 벤치마크 (실제 이미지 사용)
+    print("  Running {} iterations with real images...".format(NUM_RUNS))
     
     with torch.no_grad():
         for i in range(NUM_RUNS):
-            # 전처리
-            img = dummy_frame.copy()
-            img = np.transpose(img, (2, 0, 1)).astype(np.float32) / 255.0
-            img_tensor = torch.from_numpy(img).unsqueeze(0).to(device)
-            
-            if config['quantize']:
-                img_tensor = img_tensor.half()
-            
-            # 추론
-            metrics.record_memory()
-            start = time.time()
+            # 실제 이미지 로드 (순환)
+            img_idx = i % len(test_images)
+            img_path = test_images[img_idx]
             
             try:
-                _ = model.generate(img_tensor, word_map, rev_word_map, max_len=50, device=device)
-            except:
-                # generate가 없으면 encoder만 실행
-                features = model.encoder(img_tensor)
-                if hasattr(model, 'decoder'):
-                    batch_size = features.size(0)
-                    channel = features.size(1)
-                    features_flat = features.view(batch_size, channel, -1).permute(0, 2, 1)
-            
-            if device.type == 'cuda':
-                torch.cuda.synchronize()
-            
-            inference_time = (time.time() - start) * 1000
-            metrics.record_inference(inference_time)
-            
-            if (i + 1) % 10 == 0:
-                print("    [{}/{}] Done".format(i + 1, NUM_RUNS))
+                # 이미지 로드 (OpenCV 사용)
+                img = cv2.imread(img_path)
+                if img is None:
+                    print("    Failed to load image: {}".format(img_path))
+                    continue
+                
+                # 최적화된 전처리 함수 사용 (config에 맞게 dtype 적용)
+                img_tensor = preprocess_image_optimized(img, quantize=config['quantize'])
+                
+                # 추론 및 메모리/시간 측정
+                metrics.record_memory()
+                start = time.time()
+                
+                try:
+                    _ = model.generate(img_tensor, word_map, rev_word_map, max_len=50, device=device)
+                except:
+                    # generate가 없으면 encoder만 실행
+                    features = model.encoder(img_tensor)
+                    if hasattr(model, 'decoder'):
+                        batch_size = features.size(0)
+                        channel = features.size(1)
+                        features_flat = features.view(batch_size, channel, -1).permute(0, 2, 1)
+                
+                if device.type == 'cuda':
+                    torch.cuda.synchronize()
+                
+                inference_time = (time.time() - start) * 1000
+                metrics.record_inference(inference_time)
+                
+                if (i + 1) % 10 == 0:
+                    print()
+                    print("    [{}/{}] Done (Image: {})".format(i + 1, NUM_RUNS, os.path.basename(img_path)))
+                    
+            except Exception as e:
+                print("    Error processing image {}: {}".format(img_path, str(e)))
+                continue
     
     # 통계 계산
     stats = metrics.get_stats()
     
+    if stats is None:
+        print("  No valid benchmark data collected")
+        return None
+    
     # 모델 크기 정보
     param_count = sum(p.numel() for p in model.parameters())
+    stats['model_name']=model_name
     stats['total_params'] = param_count
     stats['model_size_mb'] = get_model_size_mb(model)
     
@@ -299,13 +462,21 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
     flops_millions = calculate_flops(model)
     stats['flops_millions'] = flops_millions
     
+    # ★ METEOR 점수 계산 (test 데이터셋 사용)
+    print("  Calculating METEOR score...")
+    meteor_score = calculate_meteor_from_test_data(model, word_map, rev_word_map)
+    stats['meteor_score'] = meteor_score
+    
     print("\n Results:")
     print("    - Latency: {:.2f} ms".format(stats['mean_latency_ms']))
     print("    - Token Time: {:.3f} ms".format(stats['mean_latency_ms'] / 50.0))
-    print("    - Memory: {:.1f} MB".format(stats['cpu_memory_mb']))
+    print("    - CPU Memory: {:.1f} MB".format(stats['cpu_memory_mb']))
+    print("    - GPU Memory: {:.1f} MB".format(stats['gpu_memory_mb']))
+    print("    - Total Memory: {:.1f} MB".format(stats['total_memory_mb']))
     print("    - Size: {:.2f} MB".format(stats['model_size_mb']))
     print("    - Params: {:,}".format(param_count))
     print("    - FLOPs: {:.1f}M".format(flops_millions))
+    print("    - METEOR: {:.4f}".format(meteor_score))
     
     return stats
 
@@ -383,92 +554,124 @@ def plot_comparison(results):
     
     # 데이터 추출
     latencies = [results[m]['mean_latency_ms'] for m in model_names]
-    memory_usage = [results[m]['cpu_memory_mb'] for m in model_names]
+    cpu_memory = [results[m]['cpu_memory_mb'] for m in model_names]
+    gpu_memory = [results[m]['gpu_memory_mb'] for m in model_names]
+    total_memory = [results[m]['total_memory_mb'] for m in model_names]
     model_sizes = [results[m]['model_size_mb'] for m in model_names]
-    param_counts = [results[m]['total_params'] / 1e6 for m in model_names]  # Million
+    param_counts = [results[m]['total_params'] / 1e6 for m in model_names]
     flops_values = [results[m]['flops_millions'] for m in model_names]
+    meteor_scores = [results[m]['meteor_score'] for m in model_names]
+    model_names=[results[m]['model_name'] for m in model_names]
+    token_time = [lat / 50.0 for lat in latencies]
     
-    # ★ FPS → Token Time으로 변경 (50 tokens 기준)
-    token_time = [lat / 50.0 for lat in latencies]  # ms per token
-    
-    # 그래프 생성
-    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+    # 그래프 생성 (2x4 = 8개 그래프)
+    fig, axes = plt.subplots(2, 4, figsize=(20, 10))
     fig.suptitle('Jetson Nano Model Performance Comparison', fontsize=16, fontweight='bold')
     
-    # 색상 설정
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
     
-    # 1. 추론 지연시간 (전체 문장)
+    # X축 라벨 단순화 (글자 잘림 방지)
+    x_labels = ['M{}'.format(i+1) for i in range(len(model_names))]
+    
+    # 1. 추론 지연시간
     axes[0, 0].bar(range(len(model_names)), latencies, color=colors, alpha=0.8)
     axes[0, 0].set_ylabel('Time (ms)', fontsize=11, fontweight='bold')
     axes[0, 0].set_title('1. Full Inference Time', fontsize=12, fontweight='bold')
     axes[0, 0].set_xticks(range(len(model_names)))
-    axes[0, 0].set_xticklabels(['Model ' + str(i+1) for i in range(len(model_names))], fontsize=9)
+    axes[0, 0].set_xticklabels(x_labels, fontsize=10)
     axes[0, 0].grid(axis='y', alpha=0.3)
     for i, v in enumerate(latencies):
-        axes[0, 0].text(i, v + 1, '{:.1f}ms'.format(v), ha='center', fontsize=10, fontweight='bold')
+        axes[0, 0].text(i, v + max(latencies)*0.02, '{:.1f}ms'.format(v), ha='center', fontsize=9, fontweight='bold')
     
-    # 2. Token당 소요시간 (★변경)
+    # 2. Token 시간
     axes[0, 1].bar(range(len(model_names)), token_time, color=colors, alpha=0.8)
     axes[0, 1].set_ylabel('Time (ms)', fontsize=11, fontweight='bold')
     axes[0, 1].set_title('2. Time Per Token', fontsize=12, fontweight='bold')
     axes[0, 1].set_xticks(range(len(model_names)))
-    axes[0, 1].set_xticklabels(['Model ' + str(i+1) for i in range(len(model_names))], fontsize=9)
+    axes[0, 1].set_xticklabels(x_labels, fontsize=10)
     axes[0, 1].grid(axis='y', alpha=0.3)
     for i, v in enumerate(token_time):
-        axes[0, 1].text(i, v + 0.02, '{:.3f}ms'.format(v), ha='center', fontsize=10, fontweight='bold')
+        axes[0, 1].text(i, v + max(token_time)*0.02, '{:.3f}ms'.format(v), ha='center', fontsize=9, fontweight='bold')
     
-    # 3. CPU 메모리 사용량
-    axes[0, 2].bar(range(len(model_names)), memory_usage, color=colors, alpha=0.8)
+    # 3. 메모리 분석 (CPU, GPU, Total)
+    x = np.arange(len(model_names))
+    width = 0.25
+    axes[0, 2].bar(x - width, cpu_memory, width, label='CPU', color='#1f77b4', alpha=0.8)
+    axes[0, 2].bar(x, gpu_memory, width, label='GPU', color='#ff7f0e', alpha=0.8)
+    axes[0, 2].bar(x + width, total_memory, width, label='Total', color='#2ca02c', alpha=0.8)
     axes[0, 2].set_ylabel('Memory (MB)', fontsize=11, fontweight='bold')
-    axes[0, 2].set_title('3. CPU Memory Usage', fontsize=12, fontweight='bold')
-    axes[0, 2].set_xticks(range(len(model_names)))
-    axes[0, 2].set_xticklabels(['Model ' + str(i+1) for i in range(len(model_names))], fontsize=9)
+    axes[0, 2].set_title('3. Memory Usage (CPU/GPU/Total)', fontsize=12, fontweight='bold')
+    axes[0, 2].set_xticks(x)
+    axes[0, 2].set_xticklabels(x_labels, fontsize=10)
+    axes[0, 2].legend(fontsize=9)
     axes[0, 2].grid(axis='y', alpha=0.3)
-    for i, v in enumerate(memory_usage):
-        axes[0, 2].text(i, v + 10, '{:.0f}MB'.format(v), ha='center', fontsize=10, fontweight='bold')
     
     # 4. 모델 크기
-    axes[1, 0].bar(range(len(model_names)), model_sizes, color=colors, alpha=0.8)
-    axes[1, 0].set_ylabel('Size (MB)', fontsize=11, fontweight='bold')
-    axes[1, 0].set_title('4. Model File Size', fontsize=12, fontweight='bold')
-    axes[1, 0].set_xticks(range(len(model_names)))
-    axes[1, 0].set_xticklabels(['Model ' + str(i+1) for i in range(len(model_names))], fontsize=9)
-    axes[1, 0].grid(axis='y', alpha=0.3)
+    axes[0, 3].bar(range(len(model_names)), model_sizes, color=colors, alpha=0.8)
+    axes[0, 3].set_ylabel('Size (MB)', fontsize=11, fontweight='bold')
+    axes[0, 3].set_title('4. Model File Size', fontsize=12, fontweight='bold')
+    axes[0, 3].set_xticks(range(len(model_names)))
+    axes[0, 3].set_xticklabels(x_labels, fontsize=10)
+    axes[0, 3].grid(axis='y', alpha=0.3)
     for i, v in enumerate(model_sizes):
-        axes[1, 0].text(i, v + 0.5, '{:.2f}MB'.format(v), ha='center', fontsize=10, fontweight='bold')
+        axes[0, 3].text(i, v + max(model_sizes)*0.02, '{:.2f}MB'.format(v), ha='center', fontsize=9, fontweight='bold')
     
     # 5. 파라미터 개수
-    axes[1, 1].bar(range(len(model_names)), param_counts, color=colors, alpha=0.8)
-    axes[1, 1].set_ylabel('Parameters (M)', fontsize=11, fontweight='bold')
-    axes[1, 1].set_title('5. Total Parameters', fontsize=12, fontweight='bold')
-    axes[1, 1].set_xticks(range(len(model_names)))
-    axes[1, 1].set_xticklabels(['Model ' + str(i+1) for i in range(len(model_names))], fontsize=9)
-    axes[1, 1].grid(axis='y', alpha=0.3)
+    axes[1, 0].bar(range(len(model_names)), param_counts, color=colors, alpha=0.8)
+    axes[1, 0].set_ylabel('Parameters (M)', fontsize=11, fontweight='bold')
+    axes[1, 0].set_title('5. Total Parameters', fontsize=12, fontweight='bold')
+    axes[1, 0].set_xticks(range(len(model_names)))
+    axes[1, 0].set_xticklabels(model_names, fontsize=9)
+    axes[1, 0].grid(axis='y', alpha=0.3)
     for i, v in enumerate(param_counts):
-        axes[1, 1].text(i, v + 0.1, '{:.1f}M'.format(v), ha='center', fontsize=10, fontweight='bold')
+        axes[1, 0].text(i, v + 0.1, '{:.1f}M'.format(v), ha='center', fontsize=10, fontweight='bold')
     
     # 6. FLOPs
-    axes[1, 2].bar(range(len(model_names)), flops_values, color=colors, alpha=0.8)
-    axes[1, 2].set_ylabel('FLOPs (M)', fontsize=11, fontweight='bold')
-    axes[1, 2].set_title('6. Floating Point Operations', fontsize=12, fontweight='bold')
-    axes[1, 2].set_xticks(range(len(model_names)))
-    axes[1, 2].set_xticklabels(['Model ' + str(i+1) for i in range(len(model_names))], fontsize=9)
-    axes[1, 2].grid(axis='y', alpha=0.3)
+    axes[1, 1].bar(range(len(model_names)), flops_values, color=colors, alpha=0.8)
+    axes[1, 1].set_ylabel('FLOPs (M)', fontsize=11, fontweight='bold')
+    axes[1, 1].set_title('6. Floating Point Ops', fontsize=12, fontweight='bold')
+    axes[1, 1].set_xticks(range(len(model_names)))
+    axes[1, 1].set_xticklabels(x_labels, fontsize=10)
+    axes[1, 1].grid(axis='y', alpha=0.3)
     for i, v in enumerate(flops_values):
-        axes[1, 2].text(i, v + 50, '{:.0f}M'.format(v), ha='center', fontsize=10, fontweight='bold')
+        axes[1, 1].text(i, v + max(flops_values)*0.02, '{:.0f}M'.format(v), ha='center', fontsize=9, fontweight='bold')
+    
+    # 7. METEOR 점수
+    axes[1, 2].bar(range(len(model_names)), meteor_scores, color=colors, alpha=0.8)
+    axes[1, 2].set_ylabel('METEOR Score', fontsize=11, fontweight='bold')
+    axes[1, 2].set_title('7. METEOR Quality Score', fontsize=12, fontweight='bold')
+    axes[1, 2].set_xticks(range(len(model_names)))
+    axes[1, 2].set_xticklabels(x_labels, fontsize=10)
+    max_meteor = max(meteor_scores) if meteor_scores else 1
+    axes[1, 2].set_ylim([0, max(max_meteor*1.15, 0.1)])
+    axes[1, 2].grid(axis='y', alpha=0.3)
+    for i, v in enumerate(meteor_scores):
+        axes[1, 2].text(i, v + max_meteor*0.02, '{:.3f}'.format(v), ha='center', fontsize=9, fontweight='bold')
+    
+    # 8. 성능 종합 점수
+    latency_score = [1.0 / (lat / 100 + 0.1) for lat in latencies]
+    memory_score = [1.0 / (mem / 100 + 0.1) for mem in total_memory]
+    overall_score = [
+        (latency_score[i] + memory_score[i] + meteor_scores[i] * 10) / 12
+        for i in range(len(model_names))
+    ]
+    
+    axes[1, 3].bar(range(len(model_names)), overall_score, color=colors, alpha=0.8)
+    axes[1, 3].set_ylabel('Score', fontsize=11, fontweight='bold')
+    axes[1, 3].set_title('8. Overall Score', fontsize=12, fontweight='bold')
+    axes[1, 3].set_xticks(range(len(model_names)))
+    axes[1, 3].set_xticklabels(x_labels, fontsize=10)
+    axes[1, 3].grid(axis='y', alpha=0.3)
+    for i, v in enumerate(overall_score):
+        axes[1, 3].text(i, v + max(overall_score)*0.02, '{:.2f}'.format(v), ha='center', fontsize=9, fontweight='bold')
     
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     
-    # 저장
     output_path = 'benchmark_comparison.png'
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     print("Graph saved: {}".format(output_path))
     
-    # 상세 테이블
     plot_comparison_table(results)
-    
-    plt.show()
 
 def plot_comparison_table(results):
     """상세 비교 테이블"""
@@ -482,24 +685,25 @@ def plot_comparison_table(results):
     for idx, model_name in enumerate(model_names):
         stats = results[model_name]
         table_data.append([
-            'Model {}'.format(idx + 1),
+            'M{}'.format(idx + 1),
             '{:.2f}ms'.format(stats['mean_latency_ms']),
-            '{:.3f}ms'.format(stats['mean_latency_ms'] / 50.0),  # Token time
-            '{:.1f}MB'.format(stats['cpu_memory_mb']),
+            '{:.3f}ms'.format(stats['mean_latency_ms'] / 50.0),
+            '{:.0f}/{:.0f}/{:.0f}'.format(stats['cpu_memory_mb'], stats['gpu_memory_mb'], stats['total_memory_mb']),
             '{:.2f}MB'.format(stats['model_size_mb']),
             '{:.1f}M'.format(stats['total_params'] / 1e6),
             '{:.0f}M'.format(stats['flops_millions']),
+            '{:.4f}'.format(stats['meteor_score']),
         ])
     
     # 테이블 생성
-    col_labels = ['Model', 'Latency', 'Token Time', 'Memory', 'Size', 'Params', 'FLOPs']
+    col_labels = ['Model', 'Latency', 'Token', 'Memory(C/G/T)', 'Size', 'Params', 'FLOPs', 'METEOR']
     
     table = ax.table(
         cellText=table_data,
         colLabels=col_labels,
         cellLoc='center',
         loc='center',
-        colWidths=[0.12, 0.12, 0.14, 0.13, 0.12, 0.12, 0.12]
+        colWidths=[0.08, 0.10, 0.10, 0.15, 0.10, 0.10, 0.10, 0.12]
     )
     
     table.auto_set_font_size(False)
@@ -520,6 +724,7 @@ def plot_comparison_table(results):
     plt.title('Jetson Nano Model Performance Details', fontsize=14, fontweight='bold', pad=20)
     plt.savefig('benchmark_comparison_table.png', dpi=150, bbox_inches='tight')
     print("Table saved: benchmark_comparison_table.png")
+    plt.close('all')
 
 if __name__ == "__main__":
     main()
