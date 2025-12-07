@@ -17,13 +17,19 @@ from src.utils.model_utils import get_model_size_mb
 # ============================================================================
 # 환경 설정
 # ============================================================================
-# Jetson Nano 최적화
-torch.backends.cudnn.enabled = False  # cuDNN 비활성화 (메모리 절약)
+# Jetson Nano 최적화 (CPU 전용)
+
+os.environ['CUDA_VISIBLE_DEVICES'] = ''  # GPU 비활성화
+torch.backends.cudnn.enabled = False  # cuDNN 비활성화
 torch.backends.cudnn.benchmark = False
 
-# 디바이스 선택
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("디바이스: {}".format(device))
+# CPU 메모리 최적화
+torch.set_num_threads(2)  # CPU 스레드 제한
+torch.set_num_interop_threads(1)
+
+# 디바이스 선택 (강제 CPU)
+device = torch.device("cpu")
+print("디바이스: {} (GPU 비활성화됨)".format(device))
 
 # 모델 경로 설정
 MODELS = {
@@ -54,6 +60,18 @@ transform = transforms.Compose([
                        std=[0.229, 0.224, 0.225])
 ])
 
+import subprocess
+
+def set_jetson_max_performance():
+    """젯슨 나노의 전력을 MAX 모드로 설정 (root 권한 필요)"""
+    try:
+        # 전력 모드를 10W 모드로 변경 (Jetson Nano)
+        subprocess.run(['sudo', 'nvpmodel', '-m', '0'], check=True)
+        # 클럭 속도를 최대로 고정
+        subprocess.run(['sudo', 'jetson_clocks'], check=True)
+        print("🚀 젯슨 나노를 최고 성능 모드로 설정했습니다.")
+    except:
+        print("⚠️  전력 모드 변경 실패. (sudo 권한이 없거나 이미 설정됨)")
 # ============================================================================
 # 성능 모니터링 클래스
 # ============================================================================
@@ -237,7 +255,9 @@ def load_model(model_choice):
     
     try:
         print("\n📂 모델 로드 중: {}".format(model_path))
-        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+        
+        # CPU에서 로드 (메모리 안전)
+        checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             word_map = checkpoint.get('word_map')
@@ -265,13 +285,18 @@ def load_model(model_choice):
             print("      • Decoder Dim: {}".format(decoder_dim))
             print("      • Attention Dim: {}".format(attention_dim))
             
-            # 올바른 크기로 모델 생성
-            model = MobileNetCaptioningModel(
-                vocab_size=vocab_size, 
-                embed_dim=300,
-                decoder_dim=decoder_dim,
-                attention_dim=attention_dim
-            ).to(device)
+            # 올바른 크기로 모델 생성 (CPU에서만)
+            try:
+                model = MobileNetCaptioningModel(
+                    vocab_size=vocab_size, 
+                    embed_dim=300,
+                    decoder_dim=decoder_dim,
+                    attention_dim=attention_dim
+                )
+                model = model.to(device)
+            except Exception as e:
+                print("❌ 모델 생성 실패: {}".format(e))
+                return None, None, None, None
             
             # state_dict 로드 (strict=False로 호환되는 레이어만 로드)
             try:
@@ -279,12 +304,21 @@ def load_model(model_choice):
                 print("✅ 모델 상태 로드 완료")
             except Exception as e:
                 print("⚠️  상태 로드 중 경고: {}".format(e))
+                import traceback
+                traceback.print_exc()
             
             # 메모리 정리
             del checkpoint, state_dict
             gc.collect()
             
             model.eval()
+            
+            # 모델 to CPU 명시
+            try:
+                model = model.cpu()
+                model.eval()
+            except:
+                pass
             
             model_name = model_info['name']
             
@@ -314,32 +348,50 @@ def apply_quantization(model, quant_choice, model_name):
     if quant_choice == '1':
         # FP32 - 양자화 없음
         print("\n✅ FP32 (양자화 없음)")
+        model = model.cpu()
+        model.eval()
         return model, model_name
     
     elif quant_choice == '2':
-        # FP16 - Half Precision
+        # FP16 - Half Precision (CPU에서는 제한적)
         print("\n📊 양자화 적용 중: {}".format(quant_name))
         try:
-            model = model.half()
-            model_name = "{} + FP16".format(model_name)
-            print("✅ FP16 양자화 완료")
+            # CPU에서는 FP16이 지원되지 않으므로 FP32 유지
+            print("⚠️  CPU에서는 FP16이 지원되지 않습니다. FP32로 유지합니다.")
+            model = model.cpu()
+            model.eval()
             return model, model_name
         except Exception as e:
             print("⚠️ FP16 변환 실패: {}".format(e))
+            model = model.cpu()
+            model.eval()
             return model, model_name
     
     elif quant_choice == '3':
         # INT8 - Dynamic Quantization
         print("\n📊 양자화 적용 중: {}".format(quant_name))
         try:
-            quantized_model = apply_dynamic_quantization(model)
-            print("✅ INT8 양자화 완료")
-            model_name = "{} + INT8".format(model_name)
-            return quantized_model, model_name
+            # CPU 기반 INT8 양자화 (안전 버전)
+            model = model.cpu()
+            model.eval()
+            
+            # Dynamic Quantization 적용 (CPU 안전)
+            try:
+                quantized_model = apply_dynamic_quantization(model)
+                print("✅ INT8 양자화 완료")
+                model_name = "{} + INT8".format(model_name)
+                return quantized_model, model_name
+            except Exception as e2:
+                print("⚠️  INT8 적용 실패, FP32로 진행합니다: {}".format(e2))
+                return model, model_name
         except Exception as e:
             print("⚠️ INT8 양자화 실패: {}. 원본 모델로 계속합니다.".format(e))
+            model = model.cpu()
+            model.eval()
             return model, model_name
     
+    model = model.cpu()
+    model.eval()
     return model, model_name
 
 # ============================================================================
@@ -347,26 +399,39 @@ def apply_quantization(model, quant_choice, model_name):
 # ============================================================================
 def generate_caption_from_image(model, word_map, rev_word_map, frame):
     """이미지로부터 캡션 생성"""
+    image_tensor = None
     try:
+        # 모델을 CPU로 이동
+        model = model.cpu()
+        model.eval()
+        
         # OpenCV BGR을 RGB로 변환
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(rgb_frame)
         
-        # 전처리
-        image_tensor = transform(pil_image).unsqueeze(0).to(device)
+        # 전처리 (CPU에서만)
+        image_tensor = transform(pil_image).unsqueeze(0)
         
         # 캡션 생성
         start_time = time.time()
         try:
             with torch.no_grad():
+                # 메모리 안전성을 위해 배치 크기 = 1로 제한
                 generated_words = model.generate(image_tensor, word_map, rev_word_map, max_len=50)
         except RuntimeError as e:
-            print("경고: 메모리 부족 - {}".format(e))
+            print("경고: 추론 실패 - {}".format(e))
+            gc.collect()
+            return None, 0.0
+        except Exception as e:
+            print("경고: 예상 불가능한 오류 - {}".format(e))
+            import traceback
+            traceback.print_exc()
             gc.collect()
             return None, 0.0
         finally:
             # 이미지 텐서 메모리 해제
-            del image_tensor
+            if image_tensor is not None:
+                del image_tensor
             gc.collect()
         
         inference_time = (time.time() - start_time) * 1000
@@ -377,14 +442,21 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
         return caption, inference_time
     except Exception as e:
         print("캡션 생성 오류: {}".format(e))
+        import traceback
+        traceback.print_exc()
+        if image_tensor is not None:
+            del image_tensor
+        gc.collect()
         return None, 0.0
 
 # ============================================================================
 # 메인 실행 함수
 # ============================================================================
 def main():
-    # 성능 모니터 생성
-    print("\n📊 성능 모니터링 초기화 중...")
+    set_jetson_max_performance()
+    print("\n📊 Jetson Nano 이미지 캡셔닝 시스템")
+    print("="*70)
+    
     
     # 모델 선택
     model_choice = select_model()
@@ -395,28 +467,40 @@ def main():
         print("❌ 모델을 로드할 수 없습니다.")
         return
     
-    # 메모리 경고 임계값 (Jetson Nano 4GB 기준)
-    MEMORY_WARNING_THRESHOLD = 2500  # MB
-    
     # 양자화 선택 및 적용
     quant_choice = select_quantization()
     model, model_name = apply_quantization(model, quant_choice, model_name)
     
-    monitor = PerformanceMonitor(model)
+    # CPU 모드 명시적 설정
+    model = model.cpu()
+    model.eval()
+    
+    # 성능 모니터 생성
+    try:
+        monitor = PerformanceMonitor(model)
+    except Exception as e:
+        print("⚠️  성능 모니터 초기화 실패: {}".format(e))
+        monitor = None
 
     # 카메라 초기화
+    print("\n📹 카메라 초기화 중...")
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("❌ 카메라를 열 수 없습니다.")
         return
     
+    # 카메라 설정 최적화
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    
     print("\n" + "="*70)
-    print("=== 이미지 캡셔닝 실시간 실행 ({}) ===".format(model_name))
+    print("=== 이미지 캡셔닝 시스템 ({}) ===".format(model_name))
     print("="*70)
     print("\n⌨️  키보드 명령어:")
     print("  's' : 현재 프레임에서 캡션 생성 및 음성 출력")
     print("  'r' : 마지막 캡션 다시 듣기")
-    print("  'p' : 성능 통계 출력 (JTOPS 스타일)")
+    print("  'p' : 성능 통계 출력")
     print("  'm' : 모델 변경")
     print("  'q' : 종료\n")
     
@@ -432,15 +516,17 @@ def main():
             break
         
         # 메모리 기록
-        monitor.record_memory()
+        if monitor:
+            monitor.record_memory()
         
         # 메모리 모니터링 (5프레임마다)
         frame_count += 1
         if frame_count % 5 == 0:
-            current_mem = monitor.get_cpu_memory_mb()
-            if current_mem > MEMORY_WARNING_THRESHOLD:
-                print("⚠️  높은 메모리 사용: {:.0f}MB - 정리 중...".format(current_mem))
-                gc.collect()
+            if monitor:
+                current_mem = monitor.get_cpu_memory_mb()
+                if current_mem > 2500:  # Jetson Nano 4GB 기준
+                    print("⚠️  높은 메모리 사용: {:.0f}MB - 정리 중...".format(current_mem))
+                    gc.collect()
         
         # 처리 중 표시
         if is_processing:

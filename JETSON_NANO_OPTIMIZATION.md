@@ -7,6 +7,7 @@ Segmentation fault (core dumped)
 ```
 
 ### 주요 원인
+
 1. **메모리 부족** - Jetson Nano 4GB는 대형 모델 추론 시 부족
 2. **GPU 메모리 누수** - CUDA 메모리 정리 안 됨
 3. **cuDNN 호환성** - Jetson 환경에서 cuDNN 불안정
@@ -26,7 +27,8 @@ torch.backends.cudnn.enabled = False
 torch.backends.cudnn.benchmark = False
 ```
 
-**효과**: 
+**효과**:
+
 - ✅ 메모리 누수 방지
 - ✅ CUDA 오버플로우 방지
 - ✅ 안정성 향상
@@ -40,6 +42,7 @@ gc.collect()
 ```
 
 **효과**:
+
 - ✅ 200-300MB 메모리 절약
 - ✅ 로드 후 메모리 재사용 가능
 
@@ -52,6 +55,7 @@ gc.collect()
 ```
 
 **효과**:
+
 - ✅ 50-100MB 메모리 절약/추론
 - ✅ 연속 추론 시 메모리 누적 방지
 
@@ -66,6 +70,7 @@ if current_mem > MEMORY_WARNING_THRESHOLD:
 ```
 
 **효과**:
+
 - ✅ 메모리 초과 전 자동 정리
 - ✅ 세그멘테이션 오류 사전 예방
 
@@ -74,6 +79,7 @@ if current_mem > MEMORY_WARNING_THRESHOLD:
 ## 📊 **메모리 사용량 비교**
 
 ### Before (최적화 전)
+
 ```
 초기 로드: 2800MB (위험 영역)
 1회 추론: +150MB
@@ -81,6 +87,7 @@ if current_mem > MEMORY_WARNING_THRESHOLD:
 ```
 
 ### After (최적화 후)
+
 ```
 초기 로드: 2400MB
 1회 추론: +50MB → 정리 → 2400MB 유지
@@ -93,11 +100,13 @@ if current_mem > MEMORY_WARNING_THRESHOLD:
 ## 🚀 **Jetson Nano 실행 방법**
 
 ### 1. 기본 실행
+
 ```bash
 python3 scripts/run.py
 ```
 
 ### 2. 메모리 절약 모드
+
 ```bash
 # FP16 + Pruned 모델 선택
 # 1. Pruned Model 선택
@@ -106,6 +115,7 @@ python3 scripts/run.py
 ```
 
 ### 3. 최고 안정성 모드
+
 ```bash
 # INT8 + Pruned 모델
 # 1. Pruned Model 선택
@@ -118,16 +128,18 @@ python3 scripts/run.py
 ## 📈 **권장 구성**
 
 ### 현재 Jetson Nano 사양
+
 - **메모리**: 4GB
 - **GPU**: Maxwell (128 CUDA cores)
 - **가용 메모리**: ~2.5GB (OS + 시스템)
 
 ### 권장 설정
-| 항목 | 권장값 | 사유 |
-|:---|:---|:---|
-| **모델** | Pruned | 메모리 절약 |
-| **양자화** | FP16 | 안정성 + 속도 |
-| **배치 크기** | 1 | 필수 (메모리 부족) |
+
+| 항목            | 권장값 | 사유                          |
+| :-------------- | :----- | :---------------------------- |
+| **모델**        | Pruned | 메모리 절약                   |
+| **양자화**      | FP16   | 안정성 + 속도                 |
+| **배치 크기**   | 1      | 필수 (메모리 부족)            |
 | **최대 메모리** | 2500MB | 세그멘테이션 오류 방지 임계값 |
 
 ---
@@ -135,6 +147,7 @@ python3 scripts/run.py
 ## 🔧 **세그멘테이션 오류 발생 시 대응**
 
 ### 즉각적 해결
+
 ```bash
 # 1. 프로세스 종료
 Ctrl+C
@@ -147,6 +160,7 @@ free -h
 ```
 
 ### 근본 원인 파악
+
 ```bash
 # 메모리 사용량 모니터링
 watch -n 1 'free -h | grep Mem'
@@ -156,11 +170,14 @@ sudo tegrastats
 ```
 
 ### 장기 해결책
+
 1. **모델 크기 축소**
+
    - Pruned + INT8 조합 사용
    - MobileNet width_mult 0.5 사용
 
 2. **배치 처리 제거**
+
    - 1프레임씩만 처리
 
 3. **메모리 정리 강화**
@@ -184,6 +201,7 @@ sudo tegrastats
 ## 📝 **성능 지표**
 
 ### 안정성 검증
+
 ```
 테스트 환경: Jetson Nano (4GB RAM)
 테스트 모델: Pruned + FP16
@@ -193,6 +211,7 @@ sudo tegrastats
 ```
 
 ### 성능
+
 - **FPS**: 8-12 frame/sec (Pruned + FP16)
 - **Latency**: 80-120ms/추론
 - **메모리 오버헤드/추론**: ~50MB (정리됨)
