@@ -316,44 +316,56 @@ def calculate_flops(model):
         return 0.0
 
 # ============================================================================
-# 성능 측정 함수
+# 성능 측정 함수 (개선된 버전)
 # ============================================================================
 class BenchmarkMetrics:
-    """모델 성능 메트릭"""
-    def __init__(self):
+    """모델 성능 메트릭 (정확한 측정)"""
+    def __init__(self, model):
         self.inference_times = []
         self.cpu_memory_usage = []
         self.gpu_memory_usage = []
         self.process = psutil.Process(os.getpid())
+        self.model = model  # ★ 모델 저장 (모델 메모리 포함)
     
     def record_inference(self, inf_time):
-        """추론 시간 기록"""
+        """추론 시간 기록 (ms 단위)"""
         self.inference_times.append(inf_time)
+    
+    def get_cpu_memory_mb(self):
+        """CPU 메모리 사용량 (MB)"""
+        try:
+            mem_info = self.process.memory_info()
+            return mem_info.rss / 1024 / 1024  # ★ RSS 사용 (정확함)
+        except:
+            return 0.0
+    
+    def get_gpu_memory_mb(self):
+        """GPU 메모리 사용량 (MB)"""
+        if device.type == 'cuda':
+            try:
+                allocated = torch.cuda.memory_allocated() / 1024 / 1024
+                return allocated  # ★ allocated 반환 (정확한 사용량)
+            except:
+                return 0.0
+        return 0.0
     
     def record_memory(self):
         """메모리 기록 (CPU + GPU)"""
-        cpu_mem = self.process.memory_info().rss / 1024 / 1024
-        self.cpu_memory_usage.append(cpu_mem)
+        cpu_mem = self.get_cpu_memory_mb()
+        gpu_mem = self.get_gpu_memory_mb()
         
-        # GPU 메모리 기록
-        if device.type == 'cuda':
-            try:
-                gpu_mem = torch.cuda.memory_allocated() / 1024 / 1024
-                self.gpu_memory_usage.append(gpu_mem)
-            except:
-                self.gpu_memory_usage.append(0)
-        else:
-            self.gpu_memory_usage.append(0)
+        self.cpu_memory_usage.append(cpu_mem)
+        self.gpu_memory_usage.append(gpu_mem)
     
     def get_stats(self):
         """통계 계산"""
         if not self.inference_times:
             return None
         
-        times = np.array(self.inference_times)
-        cpu_mem = np.mean(self.cpu_memory_usage) if self.cpu_memory_usage else 0
-        gpu_mem = np.mean(self.gpu_memory_usage) if self.gpu_memory_usage else 0
-        total_mem = cpu_mem + gpu_mem
+        # ★ 최근 30개 데이터만 사용 (안정적인 통계)
+        times = np.array(self.inference_times[-30:])
+        mem_cpu = np.array(self.cpu_memory_usage[-30:]) if self.cpu_memory_usage else []
+        mem_gpu = np.array(self.gpu_memory_usage[-30:]) if self.gpu_memory_usage else []
         
         return {
             'mean_latency_ms': float(np.mean(times)),
@@ -361,9 +373,9 @@ class BenchmarkMetrics:
             'min_latency_ms': float(np.min(times)),
             'max_latency_ms': float(np.max(times)),
             'std_latency_ms': float(np.std(times)),
-            'cpu_memory_mb': float(cpu_mem),
-            'gpu_memory_mb': float(gpu_mem),
-            'total_memory_mb': float(total_mem),
+            'cpu_memory_mb': float(np.max(mem_cpu)) if len(mem_cpu) > 0 else 0,  # ★ 최대값
+            'gpu_memory_mb': float(np.max(mem_gpu)) if len(mem_gpu) > 0 else 0,  # ★ 최대값
+            'total_memory_mb': float(np.max(mem_cpu) + np.max(mem_gpu)) if len(mem_cpu) > 0 or len(mem_gpu) > 0 else 0,
             'total_params': 0,
             'model_size_mb': 0,
             'flops_millions': 0,
@@ -375,7 +387,8 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
     print("\nBenchmarking: {}".format(model_name))
     print("-" * 70)
     
-    metrics = BenchmarkMetrics()
+    # ★ 수정: 모델을 BenchmarkMetrics에 전달
+    metrics = BenchmarkMetrics(model)
     
     # Test 데이터셋 로드 (실제 이미지)
     test_images, test_captions = load_test_dataset()
@@ -396,6 +409,10 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
     if device.type == 'cuda':
         torch.cuda.synchronize()
     print(" Done")
+    
+    # ★ 워밍업 후 메모리 초기화
+    if device.type == 'cuda':
+        torch.cuda.reset_peak_memory_stats()
     
     # 본 벤치마크 (실제 이미지 사용 + METEOR 동시 측정)
     print("  Running {} iterations with real images (measuring METEOR)...".format(NUM_RUNS))
@@ -606,10 +623,10 @@ def plot_comparison(results):
     for i, v in enumerate(latencies):
         axes[0, 0].text(i, v + max(latencies)*0.02, '{:.1f}ms'.format(v), ha='center', fontsize=9, fontweight='bold')
     
-    # 2. Token 시간
+    # 2. Token당 소요시간 (★변경)
     axes[0, 1].bar(range(len(model_names)), token_time, color=colors, alpha=0.8)
     axes[0, 1].set_ylabel('Time (ms)', fontsize=11, fontweight='bold')
-    axes[0, 1].set_title('2. Time Per Token', fontsize=12, fontweight='bold')
+    axes[0, 1].set_title('2. Time Per Token (50 tokens)', fontsize=12, fontweight='bold')
     axes[0, 1].set_xticks(range(len(model_names)))
     axes[0, 1].set_xticklabels(x_labels, fontsize=10)
     axes[0, 1].grid(axis='y', alpha=0.3)

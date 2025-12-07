@@ -124,8 +124,9 @@ print("✅ 환경 설정 완료", file=sys.stderr)
 # ============================================================================
 class PerformanceMonitor:
     """모델 성능 모니터링"""
-    def __init__(self,model):
+    def __init__(self, model):
         self.inference_times = []
+        self.token_counts = []  # ★ 토큰 개수 기록
         self.memory_usage = []
         self.gpu_memory = []
         self.process = psutil.Process(os.getpid())
@@ -134,6 +135,10 @@ class PerformanceMonitor:
     def record_inference(self, inference_time):
         """추론 시간 기록"""
         self.inference_times.append(inference_time)
+    
+    def record_token_count(self, token_count):
+        """★ 생성된 토큰 개수 기록"""
+        self.token_counts.append(token_count)
     
     def get_cpu_memory_mb(self):
         """CPU 메모리 사용량 (MB)"""
@@ -155,52 +160,100 @@ class PerformanceMonitor:
         return 0.0
     
     def record_memory(self):
-        """메모리 사용량 기록"""
-        self.memory_usage.append(self.get_cpu_memory_mb())
-        self.gpu_memory.append(self.get_gpu_memory_mb())
+        """메모리 사용량 기록 (최대값 추적)"""
+        cpu_mem = self.get_cpu_memory_mb()
+        gpu_mem = self.get_gpu_memory_mb()
+        
+        self.memory_usage.append(cpu_mem)
+        self.gpu_memory.append(gpu_mem)
     
     def get_stats(self):
-        """통계 계산"""
+        """통계 계산 (실제 토큰 개수 기반)"""
         if not self.inference_times:
             return None
         
-        inf_times = np.array(self.inference_times[-30:])  # 최근 30개
+        # ★ 최근 30개 데이터만 사용 (안정적인 통계)
+        inf_times = np.array(self.inference_times[-30:])
+        token_cnts = np.array(self.token_counts[-30:]) if self.token_counts else []
+        mem_cpu = np.array(self.memory_usage[-30:]) if self.memory_usage else []
+        mem_gpu = np.array(self.gpu_memory[-30:]) if self.gpu_memory else []
+        
+        mean_latency = float(np.mean(inf_times))
+        
+        # ★ 토큰당 추론시간 (실제 토큰 개수 기반)
+        if len(token_cnts) > 0 and np.mean(token_cnts) > 0:
+            avg_token_count = float(np.mean(token_cnts))
+            token_per_time = mean_latency / avg_token_count
+        else:
+            avg_token_count = 0
+            token_per_time = 0
         
         stats = {
-            'mean_latency_ms': float(np.mean(inf_times)),
+            'mean_latency_ms': mean_latency,
             'median_latency_ms': float(np.median(inf_times)),
             'min_latency_ms': float(np.min(inf_times)),
             'max_latency_ms': float(np.max(inf_times)),
             'std_latency_ms': float(np.std(inf_times)),
-            'fps': float(1000.0 / np.mean(inf_times)),
-            'cpu_memory_mb': float(np.mean(self.memory_usage[-30:]) if self.memory_usage else 0),
-            'gpu_memory_mb': float(np.mean(self.gpu_memory[-30:]) if self.gpu_memory else 0),
-            'total_inferences': len(self.inference_times)
+            'avg_token_count': avg_token_count,  # ★ 평균 토큰 개수
+            'token_time_ms': token_per_time,  # ★ 실제 토큰 개수 기반
+            # ★ 메모리는 최대값 사용 (평균 아님)
+            'cpu_memory_mb': float(np.max(mem_cpu)) if len(mem_cpu) > 0 else 0,
+            'gpu_memory_mb': float(np.max(mem_gpu)) if len(mem_gpu) > 0 else 0,
+            'total_inferences': len(self.inference_times),
+            'samples': len(inf_times)  # 통계에 사용된 샘플 수
         }
         return stats
     
     def print_stats(self):
-        """성능 통계 출력"""
+        """성능 통계 출력 (상세)"""
         stats = self.get_stats()
         if stats is None:
             print("아직 데이터가 없습니다.")
             return
         
         print("\n" + "="*70)
-        print("=== 성능 통계 (JTOPS 스타일) ===")
+        print("=== 성능 통계 (상세 분석) ===")
         print("="*70)
+        
+        # ★ 1. Latency (추론 시간)
         print("⏱️  추론 시간 (Latency):")
         print("    • 평균: {:.2f} ms".format(stats['mean_latency_ms']))
-        print("    • 중앙값: {:.2f} ms".format(stats['median_latency_ms']))
+        print("    • 중앙값: {:.2f} ms (★ 이상치 미포함)".format(stats['median_latency_ms']))
         print("    • 최소/최대: {:.2f} / {:.2f} ms".format(stats['min_latency_ms'], stats['max_latency_ms']))
-        print("    • 표준편차: {:.2f} ms".format(stats['std_latency_ms']))
-        print("\n🎬 처리 속도 (Throughput):")
-        print("    • FPS: {:.1f} frame/sec".format(stats['fps']))
-        print("    • 1프레임 처리: {:.2f} ms".format(stats['mean_latency_ms']))
-        print("\n💾 메모리 사용량:")
+        print("    • 표준편차: {:.2f} ms (★ 안정성 지표)".format(stats['std_latency_ms']))
+        print("    • 샘플: {}개 (최근 30개)".format(stats['samples']))
+        
+        # ★ 2. Token당 추론시간 (실제 토큰 개수 기반)
+        print("\n📊 토큰당 추론시간 (실제 토큰 개수 기반):")
+        print("    • 평균 토큰 개수: {:.1f}개".format(stats['avg_token_count']))
+        print("    • 평균: {:.3f} ms/token".format(stats['token_time_ms']))
+        if stats['token_time_ms'] > 0:
+            print("    • 처리 속도: {:.1f} token/sec".format(1000.0 / stats['token_time_ms']))
+        else:
+            print("    • 처리 속도: N/A")
+        
+        # ★ 3. Memory (메모리) - 최대값 사용
+        print("\n💾 메모리 사용량 (최대값):")
         print("    • CPU: {:.1f} MB".format(stats['cpu_memory_mb']))
         if device.type in ['cuda', 'mps']:
             print("    • GPU: {:.1f} MB".format(stats['gpu_memory_mb']))
+            print("    • 합계: {:.1f} MB".format(stats['cpu_memory_mb'] + stats['gpu_memory_mb']))
+            
+            # ★ GPU 메모리 상태 자세히 출력
+            if device.type == 'cuda':
+                try:
+                    total_gpu = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024
+                    allocated = torch.cuda.memory_allocated() / 1024 / 1024
+                    reserved = torch.cuda.memory_reserved() / 1024 / 1024
+                    
+                    print("\n    GPU 상세 정보:")
+                    print("      - 할당됨 (allocated): {:.1f} MB".format(allocated))
+                    print("      - 예약됨 (reserved): {:.1f} MB".format(reserved))
+                    print("      - 여유: {:.1f} MB".format(total_gpu - allocated))
+                    print("      - 총 용량: {:.1f} MB".format(total_gpu))
+                except:
+                    pass
+        
         print("\n📊 누적 통계:")
         print("    • 총 추론 횟수: {}회".format(stats['total_inferences']))
         print("="*70 + "\n")
@@ -550,7 +603,7 @@ def apply_quantization(model, quant_choice, model_name):
 # 캡션 생성 함수
 # ============================================================================
 def generate_caption_from_image(model, word_map, rev_word_map, frame):
-    """이미지로부터 캡션 생성"""
+    """이미지로부터 캡션 생성 (실제 토큰 개수 반환)"""
     image_tensor = None
     try:
         # 모델을 디바이스로 이동
@@ -564,17 +617,17 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
         try:
             with torch.no_grad():
                 # 메모리 안전성을 위해 배치 크기 = 1로 제한
-                generated_words = model.generate(image_tensor, word_map, rev_word_map, max_len=50,device=device)
+                generated_words = model.generate(image_tensor, word_map, rev_word_map, max_len=50, device=device)
         except RuntimeError as e:
             print("경고: 추론 실패 - {}".format(e))
             gc.collect()
-            return None, 0.0
+            return None, 0.0, 0  # ★ 토큰 개수 추가
         except Exception as e:
             print("경고: 예상 불가능한 오류 - {}".format(e))
             import traceback
             traceback.print_exc()
             gc.collect()
-            return None, 0.0
+            return None, 0.0, 0  # ★ 토큰 개수 추가
         finally:
             # 이미지 텐서 메모리 해제
             if image_tensor is not None:
@@ -583,10 +636,14 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
         
         inference_time = (time.time() - start_time) * 1000
         
-        # 토큰 제거하고 문장으로 변환
-        caption = ' '.join([w for w in generated_words if w not in ['<start>', '<end>', '<pad>', '<unk>']])
+        # ★ 실제 토큰 개수 계산 (<start>, <end>, <pad>, <unk> 제외)
+        meaningful_tokens = [w for w in generated_words if w not in ['<start>', '<end>', '<pad>', '<unk>']]
+        token_count = len(meaningful_tokens)
         
-        return caption, inference_time
+        # 토큰 제거하고 문장으로 변환
+        caption = ' '.join(meaningful_tokens)
+        
+        return caption, inference_time, token_count  # ★ 토큰 개수 반환
     except Exception as e:
         print("캡션 생성 오류: {}".format(e))
         import traceback
@@ -705,11 +762,12 @@ def main():
         # 성능 지표 표시
         stats = monitor.get_stats()
         if stats:
-            fps_text = "FPS: {:.1f}".format(stats['fps'])
+            # ★ FPS 대신 토큰당 추론시간 표시
+            token_time_text = "Token Time: {:.3f}ms".format(stats['token_time_ms'])
             latency_text = "Latency: {:.1f}ms".format(stats['mean_latency_ms'])
             mem_text = "CPU: {:.0f}MB".format(stats['cpu_memory_mb'])
             
-            cv2.putText(frame, fps_text, (10, frame.shape[0] - 32),
+            cv2.putText(frame, token_time_text, (10, frame.shape[0] - 32),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             cv2.putText(frame, latency_text, (10, frame.shape[0] - 12),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
@@ -767,13 +825,18 @@ def main():
             print("\n" + "="*70)
             print("캡션 생성 중...")
             
-            caption, inf_time = generate_caption_from_image(model, word_map, rev_word_map, frame)
+            # ★ 토큰 개수 포함해서 반환받음
+            caption, inf_time, token_count = generate_caption_from_image(model, word_map, rev_word_map, frame)
             monitor.record_inference(inf_time)
+            monitor.record_token_count(token_count)  # ★ 토큰 개수 기록
             
             if caption:
                 last_caption = caption
                 print("\n생성된 캡션: {}".format(caption))
+                print("토큰 개수: {}개".format(token_count))  # ★ 토큰 개수 출력
                 print("추론 시간: {:.2f}ms".format(inf_time))
+                if token_count > 0:
+                    print("토큰당 시간: {:.3f}ms/token".format(inf_time / token_count))  # ★ 토큰당 시간 출력
                 
                 # 캡션 음성 출력
                 speak_text_gtts(caption)
