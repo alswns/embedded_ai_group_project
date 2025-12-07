@@ -5,6 +5,7 @@ import os
 import threading
 import tempfile
 import time
+import psutil
 from PIL import Image
 from torchvision import transforms
 from gtts import gTTS
@@ -19,9 +20,18 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"디바이스: {device}")
 
 # 모델 경로 설정
-MODEL_PATH = "models/lightweight_captioning_model.pth"
-if not os.path.exists(MODEL_PATH):
-    MODEL_PATH = "lightweight_captioning_model.pth"
+MODELS = {
+    '1': {
+        'name': 'Original Model',
+        'path': 'models/lightweight_captioning_model.pth',
+        'fallback': 'lightweight_captioning_model.pth'
+    },
+    '2': {
+        'name': 'Pruned Model (Struct 30% + Mag 10%)',
+        'path': 'pruning_results/Pruning_epoch_1_checkpoint.pt',
+        'fallback': None
+    }
+}
 
 # 이미지 전처리
 transform = transforms.Compose([
@@ -30,6 +40,113 @@ transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                        std=[0.229, 0.224, 0.225])
 ])
+
+# ============================================================================
+# 성능 모니터링 클래스
+# ============================================================================
+class PerformanceMonitor:
+    """모델 성능 모니터링"""
+    def __init__(self):
+        self.inference_times = []
+        self.memory_usage = []
+        self.gpu_memory = []
+        self.process = psutil.Process(os.getpid())
+    
+    def record_inference(self, inference_time):
+        """추론 시간 기록"""
+        self.inference_times.append(inference_time)
+    
+    def get_cpu_memory_mb(self):
+        """CPU 메모리 사용량 (MB)"""
+        try:
+            mem_info = self.process.memory_info()
+            return mem_info.rss / 1024 / 1024
+        except:
+            return 0.0
+    
+    def get_gpu_memory_mb(self):
+        """GPU 메모리 사용량 (MB)"""
+        if device.type == 'cuda':
+            return torch.cuda.memory_allocated() / 1024 / 1024
+        elif device.type == 'mps':
+            try:
+                return torch.mps.current_allocated_memory() / 1024 / 1024
+            except:
+                return 0.0
+        return 0.0
+    
+    def record_memory(self):
+        """메모리 사용량 기록"""
+        self.memory_usage.append(self.get_cpu_memory_mb())
+        self.gpu_memory.append(self.get_gpu_memory_mb())
+    
+    def get_stats(self):
+        """통계 계산"""
+        if not self.inference_times:
+            return None
+        
+        inf_times = np.array(self.inference_times[-30:])  # 최근 30개
+        
+        stats = {
+            'mean_latency_ms': float(np.mean(inf_times)),
+            'median_latency_ms': float(np.median(inf_times)),
+            'min_latency_ms': float(np.min(inf_times)),
+            'max_latency_ms': float(np.max(inf_times)),
+            'std_latency_ms': float(np.std(inf_times)),
+            'fps': float(1000.0 / np.mean(inf_times)),
+            'cpu_memory_mb': float(np.mean(self.memory_usage[-30:]) if self.memory_usage else 0),
+            'gpu_memory_mb': float(np.mean(self.gpu_memory[-30:]) if self.gpu_memory else 0),
+            'total_inferences': len(self.inference_times)
+        }
+        return stats
+    
+    def print_stats(self):
+        """성능 통계 출력"""
+        stats = self.get_stats()
+        if stats is None:
+            print("아직 데이터가 없습니다.")
+            return
+        
+        print("\n" + "="*70)
+        print("=== 성능 통계 (JTOPS 스타일) ===")
+        print("="*70)
+        print(f"⏱️  추론 시간 (Latency):")
+        print(f"    • 평균: {stats['mean_latency_ms']:.2f} ms")
+        print(f"    • 중앙값: {stats['median_latency_ms']:.2f} ms")
+        print(f"    • 최소/최대: {stats['min_latency_ms']:.2f} / {stats['max_latency_ms']:.2f} ms")
+        print(f"    • 표준편차: {stats['std_latency_ms']:.2f} ms")
+        print(f"\n🎬 처리 속도 (Throughput):")
+        print(f"    • FPS: {stats['fps']:.1f} frame/sec")
+        print(f"    • 1프레임 처리: {stats['mean_latency_ms']:.2f} ms")
+        print(f"\n💾 메모리 사용량:")
+        print(f"    • CPU: {stats['cpu_memory_mb']:.1f} MB")
+        if device.type in ['cuda', 'mps']:
+            print(f"    • GPU: {stats['gpu_memory_mb']:.1f} MB")
+        print(f"\n📊 누적 통계:")
+        print(f"    • 총 추론 횟수: {stats['total_inferences']}회")
+        print("="*70 + "\n")
+
+# ============================================================================
+# 모델 선택 함수
+# ============================================================================
+def select_model():
+    """사용할 모델 선택"""
+    print("\n" + "="*70)
+    print("=== 사용할 모델 선택 ===")
+    print("="*70)
+    
+    for key, model_info in MODELS.items():
+        path = model_info['path']
+        exists = os.path.exists(path)
+        status = "✅ 사용 가능" if exists else "❌ 없음"
+        print(f"{key}. {model_info['name']} {status}")
+    
+    print()
+    while True:
+        choice = input("모델을 선택하세요 (1-2): ").strip()
+        if choice in MODELS:
+            return choice
+        print("❌ 잘못된 입력입니다. 다시 선택해주세요.")
 
 # ============================================================================
 # 음성 출력 함수
@@ -69,15 +186,25 @@ def speak_text_gtts(text):
 # ============================================================================
 # 모델 로드
 # ============================================================================
-def load_model():
+def load_model(model_choice):
     """학습된 캡셔닝 모델 로드"""
-    if not os.path.exists(MODEL_PATH):
-        print(f"❌ 모델 파일을 찾을 수 없습니다: {MODEL_PATH}")
-        return None, None, None
+    model_info = MODELS[model_choice]
+    model_path = model_info['path']
+    
+    # 파일 존재 확인
+    if not os.path.exists(model_path):
+        if model_info['fallback']:
+            model_path = model_info['fallback']
+            if not os.path.exists(model_path):
+                print(f"❌ 모델 파일을 찾을 수 없습니다: {model_info['path']}")
+                return None, None, None, None
+        else:
+            print(f"❌ 모델 파일을 찾을 수 없습니다: {model_path}")
+            return None, None, None, None
     
     try:
-        print(f"📂 모델 로드 중: {MODEL_PATH}")
-        checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+        print(f"\n📂 모델 로드 중: {model_path}")
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             word_map = checkpoint.get('word_map')
@@ -86,24 +213,37 @@ def load_model():
             
             if word_map is None or rev_word_map is None:
                 print("❌ 단어장 정보가 없습니다.")
-                return None, None, None
+                return None, None, None, None
             
             # 모델 생성
             model = MobileNetCaptioningModel(vocab_size=vocab_size, embed_dim=300).to(device)
             model.load_state_dict(checkpoint['model_state_dict'])
             model.eval()
             
-            print(f"✅ 모델 로드 완료 (단어장 크기: {vocab_size})")
-            return model, word_map, rev_word_map
+            model_name = model_info['name']
+            
+            # 모델 크기 계산
+            param_size = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024 / 1024
+            buffer_size = sum(b.numel() * b.element_size() for b in model.buffers()) / 1024 / 1024
+            total_params = sum(p.numel() for p in model.parameters())
+            
+            print(f"✅ 모델 로드 완료")
+            print(f"   모델: {model_name}")
+            print(f"   단어장 크기: {vocab_size}")
+            print(f"   총 파라미터: {total_params:,}")
+            print(f"   모델 크기: {param_size + buffer_size:.2f} MB")
+            print(f"   경로: {model_path}")
+            
+            return model, word_map, rev_word_map, model_name
         else:
             print("❌ 잘못된 모델 파일 형식입니다.")
-            return None, None, None
+            return None, None, None, None
             
     except Exception as e:
         print(f"❌ 모델 로드 실패: {e}")
         import traceback
         traceback.print_exc()
-        return None, None, None
+        return None, None, None, None
 
 # ============================================================================
 # 캡션 생성 함수
@@ -137,10 +277,16 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
 # 메인 실행 함수
 # ============================================================================
 def main():
+    # 성능 모니터 생성
+    monitor = PerformanceMonitor()
+    
+    # 모델 선택
+    model_choice = select_model()
+    
     # 모델 로드
-    model, word_map, rev_word_map = load_model()
+    model, word_map, rev_word_map, model_name = load_model(model_choice)
     if model is None:
-        print("모델을 로드할 수 없습니다. 학습을 먼저 실행하세요.")
+        print("❌ 모델을 로드할 수 없습니다.")
         return
     
     # 카메라 초기화
@@ -150,16 +296,18 @@ def main():
         return
     
     print("\n" + "="*70)
-    print("=== 이미지 캡셔닝 실시간 실행 ===")
+    print(f"=== 이미지 캡셔닝 실시간 실행 ({model_name}) ===")
     print("="*70)
-    print("\n키보드 명령어:")
+    print("\n⌨️  키보드 명령어:")
     print("  's' : 현재 프레임에서 캡션 생성 및 음성 출력")
     print("  'r' : 마지막 캡션 다시 듣기")
+    print("  'p' : 성능 통계 출력 (JTOPS 스타일)")
+    print("  'm' : 모델 변경")
     print("  'q' : 종료\n")
     
     last_caption = None
     is_processing = False
-    inference_times = []
+    current_model_name = model_name
     
     while True:
         ret, frame = cap.read()
@@ -167,23 +315,37 @@ def main():
             print("카메라 읽기 실패")
             break
         
+        # 메모리 기록
+        monitor.record_memory()
+        
         # 처리 중 표시
         if is_processing:
             cv2.putText(frame, "Processing...", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
         
         # 모델 정보 표시
-        cv2.rectangle(frame, (5, frame.shape[0] - 35), (500, frame.shape[0] - 5), (50, 50, 50), -1)
-        cv2.putText(frame, "Image Captioning Model", (10, frame.shape[0] - 12),
+        cv2.rectangle(frame, (5, frame.shape[0] - 75), (550, frame.shape[0] - 5), (50, 50, 50), -1)
+        cv2.putText(frame, f"Model: {current_model_name[:40]}", (10, frame.shape[0] - 52),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
         
-        # 평균 추론 시간 표시
-        if inference_times:
-            avg_inf_time = np.mean(inference_times[-30:])
-            cv2.rectangle(frame, (frame.shape[1] - 200, frame.shape[0] - 35), 
-                         (frame.shape[1] - 5, frame.shape[0] - 5), (50, 50, 50), -1)
-            cv2.putText(frame, f"Inf: {avg_inf_time:.1f}ms", (frame.shape[1] - 190, frame.shape[0] - 12),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        # 성능 지표 표시
+        stats = monitor.get_stats()
+        if stats:
+            fps_text = f"FPS: {stats['fps']:.1f}"
+            latency_text = f"Latency: {stats['mean_latency_ms']:.1f}ms"
+            mem_text = f"CPU: {stats['cpu_memory_mb']:.0f}MB"
+            
+            cv2.putText(frame, fps_text, (10, frame.shape[0] - 32),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            cv2.putText(frame, latency_text, (10, frame.shape[0] - 12),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            cv2.putText(frame, mem_text, (frame.shape[1] - 250, frame.shape[0] - 32),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            if device.type in ['cuda', 'mps']:
+                gpu_text = f"GPU: {stats['gpu_memory_mb']:.0f}MB"
+                cv2.putText(frame, gpu_text, (frame.shape[1] - 250, frame.shape[0] - 12),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
         # 마지막 캡션 표시
         if last_caption and not is_processing:
@@ -232,10 +394,10 @@ def main():
             print("캡션 생성 중...")
             
             caption, inf_time = generate_caption_from_image(model, word_map, rev_word_map, frame)
+            monitor.record_inference(inf_time)
             
             if caption:
                 last_caption = caption
-                inference_times.append(inf_time)
                 print(f"\n생성된 캡션: {caption}")
                 print(f"추론 시간: {inf_time:.2f}ms")
                 
@@ -248,8 +410,34 @@ def main():
             is_processing = False
             
         elif key == ord('r') and last_caption:
-            print(f"\n마지막 캡션: \"{last_caption}\"")
+            print(f"\n🔊 마지막 캡션: \"{last_caption}\"")
             speak_text_gtts(last_caption)
+            
+        elif key == ord('p'):
+            monitor.print_stats()
+            
+        elif key == ord('m'):
+            print("\n모델을 변경합니다...")
+            cap.release()
+            cv2.destroyAllWindows()
+            
+            model_choice = select_model()
+            model, word_map, rev_word_map, model_name = load_model(model_choice)
+            
+            if model is None:
+                print("❌ 모델을 로드할 수 없습니다.")
+                return
+            
+            current_model_name = model_name
+            last_caption = None
+            monitor = PerformanceMonitor()  # 새 모니터 생성
+            
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                print("❌ 카메라를 열 수 없습니다.")
+                return
+            
+            print(f"\n✅ {model_name} 모델로 변경되었습니다.\n")
     
     cap.release()
     cv2.destroyAllWindows()
