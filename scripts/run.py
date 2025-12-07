@@ -30,12 +30,18 @@ try:
 except ImportError:
     print("   ⚠️  pygame 미사용", file=sys.stderr)
 
+# 프로젝트 모듈 지연 로드
+print("   ℹ️  프로젝트 모듈 (지연 로드 준비)", file=sys.stderr)
 try:
-    from src.muti_modal_model.model import MobileNetCaptioningModel
-    from src.utils.quantization_utils import apply_dynamic_quantization
-    print("   ✅ 프로젝트 모듈 로드", file=sys.stderr)
+    from src.utils.memory_safe_import import load_model_class, load_quantization_func
+    print("   ✅ 지연 로더 로드", file=sys.stderr)
+    
+    # 아직 실제 로드는 안 됨
+    _model_class_loader = load_model_class
+    _quantization_loader = load_quantization_func
+    
 except ImportError as e:
-    print("❌ 프로젝트 모듈 오류: {}".format(e), file=sys.stderr)
+    print("❌ 지연 로더 오류: {}".format(e), file=sys.stderr)
     sys.exit(1)
 
 print("✅ 모든 모듈 로드 완료", file=sys.stderr)
