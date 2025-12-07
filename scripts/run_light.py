@@ -55,12 +55,14 @@ NUM_RUNS = 50
 
 # Pruning 설정
 PRUNING_RATES = [0.1, 0.3, 0.5, 0.7, 0.9]
+
 ENABLE_MAGNITUDE_PRUNING = True
 ENABLE_FINETUNING = True
 FINETUNE_RATES = [0.3]
+#31
 FINETUNE_EPOCHS = 16
 LEARNING_RATE = 5e-5
-EARLY_STOPPING_PATIENCE = 2
+EARLY_STOPPING_PATIENCE = 5
 MAX_PRUNING_RATE = 0.51
 METEO_IMAGE_NUM = 100
 VALIDATION_SPLIT = 0.2
@@ -72,6 +74,8 @@ QUANTIZATION_METHOD = 'dynamic'  # 'dynamic', 'static', 'qat'
 
 # 디바이스 선택
 device = setup_device()
+if ENABLE_QUANTIZATION:
+    device=torch.device('cpu')
 transform = get_image_transform()
 
 
@@ -96,6 +100,7 @@ def quantize_benchmark(model, img_tensor, wm, rwm, ref_caption, baseline_params,
 def run_pruning_benchmark(pruned_model, label, img_tensor, wm, rwm, ref_caption, 
                          baseline_params, device, results, val_dataloader=None):
     """프루닝된 모델 벤치마크 및 파인튜닝 실행"""
+    
     pruned_model.to(device)
 
     # 프루닝 후 벤치마크
@@ -300,9 +305,6 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                 )
                 model.train()
                 
-                if benchmark_result and benchmark_result.get('meteor_score'):
-                    current_meteor_score = benchmark_result['meteor_score']
-            
             # Early Stopping
             if current_meteor_score is not None:
                 if current_meteor_score > best_meteor_score:
@@ -310,6 +312,11 @@ def fine_tune_pruned_model(model, word_map, img_tensor=None, wm=None, rwm=None,
                     patience_counter = 0
                     best_model_state = model.state_dict().copy()
                     print(f"   🎉 최고 METEOR: {best_meteor_score:.4f}")
+                elif val_loss < best_loss:
+                    best_loss = val_loss
+                    patience_counter = 0
+                    best_model_state = model.state_dict().copy()
+                    print(f"   🎉 새로운 최저 검증 Loss: {best_loss:.4f}")
                 else:
                     patience_counter += 1
                     print(f"   ⚠️ METEOR 미개선 (Patience: {patience_counter}/{EARLY_STOPPING_PATIENCE})")

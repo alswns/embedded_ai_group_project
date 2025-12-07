@@ -223,6 +223,7 @@ def fine_tune_model(model, train_dataloader, val_dataloader, word_map, device,
     
     # Early Stopping 설정
     best_meteor_score = -float('inf')
+    best_loss = float('inf')
     patience_counter = 0
     best_model_state = None
     
@@ -309,15 +310,23 @@ def fine_tune_model(model, train_dataloader, val_dataloader, word_map, device,
                 print(f"      ⭐ METEOR: {current_meteor_score:.4f}")
         
         # Early Stopping 체크
-        if current_meteor_score is not None:
+        if current_meteor_score is not None and best_meteor_score is not None:
+            
             if current_meteor_score > best_meteor_score:
                 best_meteor_score = current_meteor_score
                 patience_counter = 0
                 best_model_state = model.state_dict().copy()
                 print(f"   🎉 새로운 최고 METEOR 점수: {best_meteor_score:.4f}")
+            elif avg_val_loss < best_loss:
+                best_loss = avg_val_loss
+                patience_counter = 0
+                best_model_state = model.state_dict().copy()
+                print(f"   🎉 새로운 최저 검증 Loss: {best_loss:.4f}")
+                
             else:
                 patience_counter += 1
                 print(f"   ⚠️ METEOR 미개선 (Patience: {patience_counter}/{early_stopping_patience})")
+                print(f"   ⚠️ 검증 Loss 미개선 (Patience: {patience_counter}/{early_stopping_patience})")
                 
                 if patience_counter >= early_stopping_patience:
                     print(f"\n   🛑 Early Stopping 발동! Epoch {epoch+1}에서 학습 종료")

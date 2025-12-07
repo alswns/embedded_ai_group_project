@@ -3,8 +3,8 @@
   "results": [
     {
       "precision": "Original",
-      "mean_time_ms": 32.55189657211304,
-      "std_time_ms": 0.11664366682609212,
+      "mean_time_ms": 88.42131495475769,
+      "std_time_ms": 2.9848877174896757,
       "model_size_mb": 29.863727569580078,
       "meteor_score": 0.4533049496017339,
       "total_params": 7828597,
@@ -12,8 +12,8 @@
     },
     {
       "precision": "Original Quantization",
-      "mean_time_ms": 32.57659673690796,
-      "std_time_ms": 0.11428901840923089,
+      "mean_time_ms": 68.40154528617859,
+      "std_time_ms": 2.703017239630636,
       "model_size_mb": 17.58135986328125,
       "meteor_score": 0.45156599289517,
       "total_params": 4608848,
@@ -21,26 +21,26 @@
     },
     {
       "precision": "Pruning",
-      "mean_time_ms": 31.39176368713379,
-      "std_time_ms": 0.19746793239892943,
+      "mean_time_ms": 62.80941367149353,
+      "std_time_ms": 3.975243580217199,
       "model_size_mb": 21.639846801757812,
-      "meteor_score": 0.16278655183338014,
+      "meteor_score": 0.1506164553907856,
       "total_params": 6027503,
       "size_reduction": 23.006600033186018
     },
     {
       "precision": "Pruning Quantization",
-      "mean_time_ms": 32.68795609474182,
-      "std_time_ms": 0.12583741286499012,
-      "model_size_mb": 13.923778533935547,
-      "meteor_score": 0.1655731350499942,
+      "mean_time_ms": 72.79474139213562,
+      "std_time_ms": 4.694334940090319,
+      "model_size_mb": 13.923580169677734,
+      "meteor_score": 0.15321266657479293,
       "total_params": 3801272,
       "size_reduction": 51.44376444463803
     },
     {
       "precision": "Fine-tuned",
-      "mean_time_ms": 31.70408010482788,
-      "std_time_ms": 0.15516658598051603,
+      "mean_time_ms": 80.50268292427063,
+      "std_time_ms": 2.076564653370709,
       "model_size_mb": 21.640533447265625,
       "meteor_score": 0.3244695773833496,
       "total_params": 6027503,
@@ -48,8 +48,8 @@
     },
     {
       "precision": "Pruning Fine-tuned Quantization",
-      "mean_time_ms": 33.522844314575195,
-      "std_time_ms": 0.3219079280521448,
+      "mean_time_ms": 78.3915102481842,
+      "std_time_ms": 9.577657194186015,
       "model_size_mb": 13.923713684082031,
       "meteor_score": 0.32322525563720217,
       "total_params": 3801272,
