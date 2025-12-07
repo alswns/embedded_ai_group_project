@@ -94,7 +94,7 @@ def load_model_with_config(config):
         Model = load_model_class()
         
         # 체크포인트 로드
-        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+        checkpoint = torch.load(model_path, map_location=device)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             word_map = checkpoint.get('word_map')
@@ -382,10 +382,11 @@ def plot_comparison(results):
     memory_usage = [results[m]['cpu_memory_mb'] for m in model_names]
     model_sizes = [results[m]['model_size_mb'] for m in model_names]
     param_counts = [results[m]['total_params'] / 1e6 for m in model_names]  # Million
+    flops_values = [results[m]['flops_millions'] for m in model_names]  # ★ FLOPs 추가
     
-    # 그래프 생성
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-    fig.suptitle('Jetson Nano 모델 성능 비교 분석', fontsize=16, fontweight='bold')
+    # 그래프 생성 (3x3으로 변경하여 7개 그래프 표시)
+    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
+    fig.suptitle('Jetson Nano 모델 성능 비교 분석 (FLOPs 포함)', fontsize=16, fontweight='bold')
     
     # 색상 설정
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
@@ -440,16 +441,30 @@ def plot_comparison(results):
     for i, v in enumerate(param_counts):
         axes[1, 1].text(i, v + 0.1, '{:.1f}M'.format(v), ha='center', fontsize=10, fontweight='bold')
     
-    # 6. 성능-메모리 트레이드오프 (Latency × Memory)
-    tradeoff = [lat * mem for lat, mem in zip(latencies, memory_usage)]
-    axes[1, 2].bar(range(len(model_names)), tradeoff, color=colors, alpha=0.8)
-    axes[1, 2].set_ylabel('트레이드오프 (ms×MB)', fontsize=11, fontweight='bold')
-    axes[1, 2].set_title('⑥ 성능-메모리 트레이드오프\n(낮을수록 우수)', fontsize=12, fontweight='bold')
+    # ★ 6. FLOPs (새로 추가)
+    axes[1, 2].bar(range(len(model_names)), flops_values, color=colors, alpha=0.8)
+    axes[1, 2].set_ylabel('FLOPs (Million)', fontsize=11, fontweight='bold')
+    axes[1, 2].set_title('⑥ 부동소수점 연산수 (FLOPs)', fontsize=12, fontweight='bold')
     axes[1, 2].set_xticks(range(len(model_names)))
     axes[1, 2].set_xticklabels([m.replace(' + ', '\n+ ') for m in model_names], fontsize=9)
     axes[1, 2].grid(axis='y', alpha=0.3)
+    for i, v in enumerate(flops_values):
+        axes[1, 2].text(i, v + 50, '{:.0f}M'.format(v), ha='center', fontsize=10, fontweight='bold')
+    
+    # 7. 성능-메모리 트레이드오프 (Latency × Memory)
+    tradeoff = [lat * mem for lat, mem in zip(latencies, memory_usage)]
+    axes[2, 0].bar(range(len(model_names)), tradeoff, color=colors, alpha=0.8)
+    axes[2, 0].set_ylabel('트레이드오프 (ms×MB)', fontsize=11, fontweight='bold')
+    axes[2, 0].set_title('⑦ 성능-메모리 트레이드오프\n(낮을수록 우수)', fontsize=12, fontweight='bold')
+    axes[2, 0].set_xticks(range(len(model_names)))
+    axes[2, 0].set_xticklabels([m.replace(' + ', '\n+ ') for m in model_names], fontsize=9)
+    axes[2, 0].grid(axis='y', alpha=0.3)
     for i, v in enumerate(tradeoff):
-        axes[1, 2].text(i, v + 10, '{:.0f}'.format(v), ha='center', fontsize=10, fontweight='bold')
+        axes[2, 0].text(i, v + 10, '{:.0f}'.format(v), ha='center', fontsize=10, fontweight='bold')
+    
+    # 나머지 빈 서브플롯 숨기기
+    axes[2, 1].axis('off')
+    axes[2, 2].axis('off')
     
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     
@@ -465,7 +480,7 @@ def plot_comparison(results):
 
 def plot_comparison_table(results):
     """상세 비교 테이블"""
-    fig, ax = plt.subplots(figsize=(14, 6))
+    fig, ax = plt.subplots(figsize=(16, 6))
     ax.axis('off')
     
     # 테이블 데이터
@@ -481,15 +496,16 @@ def plot_comparison_table(results):
             '{:.1f}MB'.format(stats['cpu_memory_mb']),
             '{:.2f}MB'.format(stats['model_size_mb']),
             '{:.1f}M'.format(stats['total_params'] / 1e6),
+            '{:.0f}M'.format(stats['flops_millions']),  # ★ FLOPs 추가
         ])
     
     # 테이블 생성
     table = ax.table(
         cellText=table_data,
-        colLabels=['모델', '지연시간', 'FPS', 'CPU 메모리', '모델 크기', '파라미터'],
+        colLabels=['모델', '지연시간', 'FPS', 'CPU 메모리', '모델 크기', '파라미터', 'FLOPs'],
         cellLoc='center',
         loc='center',
-        colWidths=[0.25, 0.12, 0.12, 0.15, 0.15, 0.15]
+        colWidths=[0.22, 0.12, 0.10, 0.13, 0.13, 0.12, 0.12]  # ★ FLOPs 추가
     )
     
     table.auto_set_font_size(False)
