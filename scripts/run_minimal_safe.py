@@ -90,7 +90,7 @@ def load_model_from_checkpoint(path):
     
     try:
         # 체크포인트만 로드 (프로젝트 모듈 import 안 함)
-        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        checkpoint = torch.load(path, map_location='cpu')
         print("  ✅ 파일 로드", file=sys.stderr)
         
         # 메타데이터 추출
