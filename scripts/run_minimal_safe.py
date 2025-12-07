@@ -115,8 +115,8 @@ def load_model_from_checkpoint(path):
         # 간단한 모델 생성 (프로젝트 모듈 사용 X)
         decoder_dim = checkpoint.get('decoder_dim', 512)
         attention_dim = checkpoint.get('attention_dim', 256)
-        
-        model = SimpleCaptioningModel(
+        from src.muti_modal_model.model import MobileNetCaptioningModel
+        model = MobileNetCaptioningModel(
             vocab_size=vocab_size,
             embed_dim=300,
             decoder_dim=decoder_dim

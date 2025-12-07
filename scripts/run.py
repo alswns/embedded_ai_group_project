@@ -19,15 +19,6 @@ except ImportError as e:
     sys.exit(1)
 
 try:
-    # torchvision은 선택사항
-    from torchvision import transforms
-    print("   ✅ torchvision 로드", file=sys.stderr)
-    HAS_TORCHVISION = True
-except ImportError as e:
-    print("   ⚠️  torchvision 미사용: {}".format(e), file=sys.stderr)
-    HAS_TORCHVISION = False
-
-try:
     from gtts import gTTS
     print("   ✅ gtts 로드", file=sys.stderr)
 except ImportError:
@@ -94,22 +85,7 @@ def preprocess_image_manual(frame):
     
     return image_tensor
 
-# 변환 함수 선택
-if HAS_TORCHVISION:
-    print("   ℹ️  torchvision 변환 함수 사용", file=sys.stderr)
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
-    ])
-    def preprocess_image(frame):
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_frame)
-        return transform(pil_image).unsqueeze(0)
-else:
-    print("   ℹ️  수동 전처리 함수 사용", file=sys.stderr)
-    preprocess_image = preprocess_image_manual
+preprocess_image = preprocess_image_manual
 
 # 모델 경로 설정
 MODELS = {
@@ -138,12 +114,12 @@ print("✅ 환경 설정 완료", file=sys.stderr)
 # ============================================================================
 class PerformanceMonitor:
     """모델 성능 모니터링"""
-    def __init__(self):
+    def __init__(self,model):
         self.inference_times = []
         self.memory_usage = []
         self.gpu_memory = []
         self.process = psutil.Process(os.getpid())
-    
+        print("모델 크기 : {:.2f} MB".format(sum(p.numel() for p in model.parameters()) * 4 / 1024 / 1024))
     def record_inference(self, inference_time):
         """추론 시간 기록"""
         self.inference_times.append(inference_time)
