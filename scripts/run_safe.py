@@ -35,8 +35,8 @@ except ImportError as e:
 
 # 3. 프로젝트 모듈 (torchvision 없이)
 try:
-    from src.muti_modal_model.model import MobileNetCaptioningModel
     from src.utils.quantization_utils import apply_dynamic_quantization
+    from src.utils.safe_model_loader import load_model_safe
     print("✅ 프로젝트 모듈 로드 완료", file=sys.stderr)
 except ImportError as e:
     print("❌ 프로젝트 모듈 오류: {}".format(e), file=sys.stderr)
@@ -145,7 +145,7 @@ def select_quantization():
         print("잘못된 입력입니다.")
 
 def load_model(model_choice):
-    """모델 로드"""
+    """모델 로드 (안전한 로더 사용)"""
     info = MODELS[model_choice]
     path = info['path']
     
@@ -155,50 +155,19 @@ def load_model(model_choice):
     
     try:
         print("\n📂 모델 로드 중: {}".format(path))
+        model, word_map, rev_word_map = load_model_safe(path)
         
-        # CPU에서만 로드
-        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-        
-        if 'model_state_dict' not in checkpoint:
-            print("❌ 유효하지 않은 모델 파일")
+        if model is None:
+            print("❌ 모델 로드 실패")
             return None, None, None, None
-        
-        word_map = checkpoint.get('word_map')
-        rev_word_map = checkpoint.get('rev_word_map')
-        vocab_size = checkpoint.get('vocab_size')
-        
-        if not (word_map and rev_word_map and vocab_size):
-            print("❌ 단어장 없음")
-            return None, None, None, None
-        
-        # 모델 생성
-        state_dict = checkpoint['model_state_dict']
-        decoder_dim = checkpoint.get('decoder_dim', 512)
-        attention_dim = checkpoint.get('attention_dim', 256)
-        
-        try:
-            model = MobileNetCaptioningModel(
-                vocab_size=vocab_size,
-                embed_dim=300,
-                decoder_dim=decoder_dim,
-                attention_dim=attention_dim
-            )
-            model.load_state_dict(state_dict, strict=False)
-            model.eval()
-            model = model.cpu()
-        except Exception as e:
-            print("❌ 모델 생성 실패: {}".format(e))
-            return None, None, None, None
-        
-        # 메모리 정리
-        del checkpoint, state_dict
-        gc.collect()
         
         print("✅ 모델 로드 완료")
         return model, word_map, rev_word_map, info['name']
         
     except Exception as e:
-        print("❌ 오류: {}".format(e))
+        print("❌ 예상 불가능한 오류: {}".format(e), file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         return None, None, None, None
 
 def apply_quantization(model, choice):

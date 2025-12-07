@@ -13,15 +13,41 @@ print("📦 모듈 로드 시작...", file=sys.stderr)
 
 try:
     from PIL import Image
+    print("   ✅ PIL 로드", file=sys.stderr)
+except ImportError as e:
+    print("❌ PIL 필요: {}".format(e), file=sys.stderr)
+    sys.exit(1)
+
+try:
+    # torchvision은 선택사항
     from torchvision import transforms
+    print("   ✅ torchvision 로드", file=sys.stderr)
+    HAS_TORCHVISION = True
+except ImportError as e:
+    print("   ⚠️  torchvision 미사용: {}".format(e), file=sys.stderr)
+    HAS_TORCHVISION = False
+
+try:
     from gtts import gTTS
+    print("   ✅ gtts 로드", file=sys.stderr)
+except ImportError:
+    print("   ⚠️  gtts 미사용", file=sys.stderr)
+
+try:
     import pygame
+    print("   ✅ pygame 로드", file=sys.stderr)
+except ImportError:
+    print("   ⚠️  pygame 미사용", file=sys.stderr)
+
+try:
     from src.muti_modal_model.model import MobileNetCaptioningModel
     from src.utils.quantization_utils import apply_dynamic_quantization
-    print("✅ 모든 모듈 로드 완료", file=sys.stderr)
+    print("   ✅ 프로젝트 모듈 로드", file=sys.stderr)
 except ImportError as e:
-    print("❌ 모듈 로드 실패: {}".format(e), file=sys.stderr)
+    print("❌ 프로젝트 모듈 오류: {}".format(e), file=sys.stderr)
     sys.exit(1)
+
+print("✅ 모든 모듈 로드 완료", file=sys.stderr)
 
 # ============================================================================
 # 환경 설정 (CRITICAL - 크래시 방지)
@@ -40,6 +66,50 @@ torch.set_num_interop_threads(1)
 # 디바이스 설정 (강제 CPU)
 device = torch.device("cpu")
 print("📍 디바이스: CPU (GPU 비활성화됨)", file=sys.stderr)
+
+# ============================================================================
+# 이미지 전처리 함수 (torchvision 대체)
+# ============================================================================
+def preprocess_image_manual(frame):
+    """torchvision 없이 이미지 전처리"""
+    # BGR → RGB
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(rgb_frame)
+    
+    # 리사이즈
+    pil_image = pil_image.resize((224, 224), Image.BILINEAR)
+    
+    # numpy array
+    image_array = np.array(pil_image, dtype=np.float32) / 255.0
+    
+    # 정규화
+    image_array -= np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    image_array /= np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    
+    # CHW 형식
+    image_array = np.transpose(image_array, (2, 0, 1))
+    
+    # 텐서로 변환
+    image_tensor = torch.from_numpy(image_array).float().unsqueeze(0)
+    
+    return image_tensor
+
+# 변환 함수 선택
+if HAS_TORCHVISION:
+    print("   ℹ️  torchvision 변환 함수 사용", file=sys.stderr)
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                           std=[0.229, 0.224, 0.225])
+    ])
+    def preprocess_image(frame):
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(rgb_frame)
+        return transform(pil_image).unsqueeze(0)
+else:
+    print("   ℹ️  수동 전처리 함수 사용", file=sys.stderr)
+    preprocess_image = preprocess_image_manual
 
 # 모델 경로 설정
 MODELS = {
@@ -61,14 +131,6 @@ QUANTIZE_OPTIONS = {
     '2': {'name': 'FP16 (Half Precision)', 'enabled': True},
     '3': {'name': 'INT8 (Dynamic Quantization)', 'enabled': True}
 }
-
-# 이미지 전처리
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                       std=[0.229, 0.224, 0.225])
-])
 
 print("✅ 환경 설정 완료", file=sys.stderr)
 # ============================================================================
@@ -396,6 +458,8 @@ def apply_quantization(model, quant_choice, model_name):
 # ============================================================================
 # 캡션 생성 함수
 # ============================================================================
+# 캡션 생성 함수
+# ============================================================================
 def generate_caption_from_image(model, word_map, rev_word_map, frame):
     """이미지로부터 캡션 생성"""
     image_tensor = None
@@ -404,12 +468,8 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
         model = model.cpu()
         model.eval()
         
-        # OpenCV BGR을 RGB로 변환
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb_frame)
-        
-        # 전처리 (CPU에서만)
-        image_tensor = transform(pil_image).unsqueeze(0)
+        # 이미지 전처리
+        image_tensor = preprocess_image(frame)
         
         # 캡션 생성
         start_time = time.time()
