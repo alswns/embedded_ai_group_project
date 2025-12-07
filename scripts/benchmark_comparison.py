@@ -398,8 +398,10 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
         torch.cuda.synchronize()
     print(" Done")
     
-    # 본 벤치마크 (실제 이미지 사용)
-    print("  Running {} iterations with real images...".format(NUM_RUNS))
+    # 본 벤치마크 (실제 이미지 사용 + METEOR 동시 측정)
+    print("  Running {} iterations with real images (measuring METEOR)...".format(NUM_RUNS))
+    
+    meteor_scores_benchmark = []  # 벤치마크 중 METEOR 점수 저장
     
     with torch.no_grad():
         for i in range(NUM_RUNS):
@@ -421,8 +423,9 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
                 metrics.record_memory()
                 start = time.time()
                 
+                generated_caption = None
                 try:
-                    _ = model.generate(img_tensor, word_map, rev_word_map, max_len=50, device=device)
+                    generated_caption = model.generate(img_tensor, word_map, rev_word_map, max_len=50, device=device)
                 except:
                     # generate가 없으면 encoder만 실행
                     features = model.encoder(img_tensor)
@@ -437,9 +440,20 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
                 inference_time = (time.time() - start) * 1000
                 metrics.record_inference(inference_time)
                 
+                # ★ 벤치마크 중 METEOR 점수 계산
+                if generated_caption:
+                    img_name = os.path.basename(img_path)
+                    reference_caption = test_captions.get(img_name, '')
+                    if reference_caption:
+                        score = calculate_meteor_score(generated_caption, reference_caption)
+                        meteor_scores_benchmark.append(score)
+                
                 if (i + 1) % 10 == 0:
-                    print()
-                    print("    [{}/{}] Done (Image: {})".format(i + 1, NUM_RUNS, os.path.basename(img_path)))
+                    if meteor_scores_benchmark:
+                        avg_meteor = float(np.mean(meteor_scores_benchmark))
+                        print("    [{}/{}] Done | METEOR: {:.4f}".format(i + 1, NUM_RUNS, avg_meteor))
+                    else:
+                        print("    [{}/{}] Done".format(i + 1, NUM_RUNS))
                     
             except Exception as e:
                 print("    Error processing image {}: {}".format(img_path, str(e)))
@@ -462,10 +476,16 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
     flops_millions = calculate_flops(model)
     stats['flops_millions'] = flops_millions
     
-    # ★ METEOR 점수 계산 (test 데이터셋 사용)
-    print("  Calculating METEOR score...")
-    meteor_score = calculate_meteor_from_test_data(model, word_map, rev_word_map)
-    stats['meteor_score'] = meteor_score
+    # ★ METEOR 점수 (벤치마크 중 수집한 점수 사용)
+    if meteor_scores_benchmark:
+        avg_meteor = float(np.mean(meteor_scores_benchmark))
+        stats['meteor_score'] = avg_meteor
+        print("  Benchmark METEOR: {:.4f} (from {} samples)".format(avg_meteor, len(meteor_scores_benchmark)))
+    else:
+        # 벤치마크 중 METEOR 못 측정했으면 별도 계산
+        print("  Calculating METEOR score separately...")
+        meteor_score = calculate_meteor_from_test_data(model, word_map, rev_word_map, num_samples=20)
+        stats['meteor_score'] = meteor_score
     
     print("\n Results:")
     print("    - Latency: {:.2f} ms".format(stats['mean_latency_ms']))
@@ -476,7 +496,7 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
     print("    - Size: {:.2f} MB".format(stats['model_size_mb']))
     print("    - Params: {:,}".format(param_count))
     print("    - FLOPs: {:.1f}M".format(flops_millions))
-    print("    - METEOR: {:.4f}".format(meteor_score))
+    print("    - METEOR: {:.4f}".format(stats['meteor_score']))
     
     return stats
 

@@ -1,13 +1,13 @@
 {
   "Base Model": {
-    "mean_latency_ms": 35.93211650848389,
-    "median_latency_ms": 34.689903259277344,
-    "min_latency_ms": 29.590845108032227,
-    "max_latency_ms": 81.29286766052246,
-    "std_latency_ms": 6.275025731655979,
-    "cpu_memory_mb": 466.30578125,
+    "mean_latency_ms": 36.73281669616699,
+    "median_latency_ms": 36.064982414245605,
+    "min_latency_ms": 32.341957092285156,
+    "max_latency_ms": 78.04417610168457,
+    "std_latency_ms": 4.736349609578938,
+    "cpu_memory_mb": 666.58953125,
     "gpu_memory_mb": 0.0,
-    "total_memory_mb": 466.30578125,
+    "total_memory_mb": 666.58953125,
     "total_params": 7828597,
     "model_size_mb": 29.91019058227539,
     "flops_millions": 15.657194,
@@ -15,18 +15,18 @@
     "model_name": "Base Model"
   },
   "Base Model + FP16": {
-    "mean_latency_ms": 62.63603925704956,
-    "median_latency_ms": 61.412811279296875,
-    "min_latency_ms": 51.937103271484375,
-    "max_latency_ms": 105.48186302185059,
-    "std_latency_ms": 8.318011310464989,
-    "cpu_memory_mb": 683.70546875,
+    "mean_latency_ms": 60.361576080322266,
+    "median_latency_ms": 60.85336208343506,
+    "min_latency_ms": 49.27802085876465,
+    "max_latency_ms": 72.15714454650879,
+    "std_latency_ms": 5.1347982554721385,
+    "cpu_memory_mb": 676.30546875,
     "gpu_memory_mb": 0.0,
-    "total_memory_mb": 683.70546875,
+    "total_memory_mb": 676.30546875,
     "total_params": 7828597,
     "model_size_mb": 14.955224990844727,
     "flops_millions": 15.657194,
-    "meteor_score": 0.0,
+    "meteor_score": 0.3814742590381103,
     "model_name": "Base Model + FP16"
   }
 }
