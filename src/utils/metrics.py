@@ -61,25 +61,31 @@ def calculate_meteor(generated_caption, reference_caption):
     if not gen_str or not ref_str:
         return 0.0
     
+    # 특수 토큰 제거 (<start>, <end>, <pad>, <unk> 등)
+    gen_str = _remove_special_tokens(gen_str)
+    ref_str = _remove_special_tokens(ref_str)
+    
+    if not gen_str or not ref_str:
+        return 0.0
+    
     try:
-        # 방법 1: NLTK METEOR 사용 (PyTorch 환경)
+        # 방법 1: NLTK METEOR 사용 (전체 텍스트 기반)
         if METEOR_AVAILABLE and single_meteor_score is not None:
             try:
-                # NLTK word_tokenize 사용
-                ref_tokens = word_tokenize(ref_str.lower())
-                gen_tokens = word_tokenize(gen_str.lower())
-                
-                if not ref_tokens or not gen_tokens:
-                    return _compute_jaccard_similarity(gen_str, ref_str)
-                
-                # NLTK METEOR 계산
-                score = single_meteor_score(ref_str, gen_str)
+                # single_meteor_score(reference, hypothesis)
+                # reference: 참조 캡션 (문자열)
+                # hypothesis: 생성된 캡션 (문자열)
+                score = single_meteor_score(ref_str.lower(), gen_str.lower())
                 
                 # 유효한 점수인지 확인
                 if score is not None and isinstance(score, (int, float)):
                     return float(max(0.0, min(1.0, score)))  # 0~1 범위로 정규화
+                else:
+                    # None이거나 유효하지 않은 값이면 Jaccard로 폴백
+                    return _compute_jaccard_similarity(gen_str, ref_str)
             except Exception as e:
-                print(f"⚠️ NLTK METEOR failed: {e}, falling back to Jaccard...")
+                # NLTK 오류 발생 시 Jaccard로 폴백 (에러 메시지 억제)
+                return _compute_jaccard_similarity(gen_str, ref_str)
         
         # 방법 2: Jaccard 유사도 (폴백)
         return _compute_jaccard_similarity(gen_str, ref_str)
@@ -87,6 +93,32 @@ def calculate_meteor(generated_caption, reference_caption):
     except Exception as e:
         print(f"❌ calculate_meteor error: {e}")
         return 0.0
+
+
+def _remove_special_tokens(text):
+    """
+    특수 토큰 제거
+    
+    Args:
+        text: 입력 텍스트
+    
+    Returns:
+        특수 토큰이 제거된 텍스트
+    """
+    if not text:
+        return ""
+    
+    text = str(text)
+    # 일반적인 특수 토큰 제거
+    special_tokens = ['<start>', '<end>', '<pad>', '<unk>', '<unknown>', '<s>', '</s>']
+    
+    for token in special_tokens:
+        text = text.replace(token, ' ')
+    
+    # 연속된 공백 정리
+    text = ' '.join(text.split())
+    
+    return text.strip()
 
 
 def _compute_jaccard_similarity(generated, reference):
