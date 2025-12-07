@@ -70,26 +70,31 @@ sys.modules['numpy._core.multiarray'] = np.core.multiarray
 # ============================================================================
 # 이미지 전처리 함수 (torchvision 대체)
 # ============================================================================
-def preprocess_image_optimized(frame):
-    """Jetson Nano GPU 가속을 고려한 전처리 (PIL 배제)"""
-    # 1. OpenCV 하드웨어 최적화 리사이즈 (CPU 부하 감소)
-    img = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_LINEAR)
+def preprocess_image_manual(frame):
+    """torchvision 없이 이미지 전처리"""
+    # BGR → RGB
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(rgb_frame)
     
-    # 2. BGR -> RGB 전환 및 정규화 (Numpy 벡터 연산)
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    # 리사이즈
+    pil_image = pil_image.resize((224, 224), Image.BILINEAR)
     
-    # 3. 평균 및 표준편차 적용 (정규화)
-    img -= [0.485, 0.456, 0.406]
-    img /= [0.229, 0.224, 0.225]
+    # numpy array
+    image_array = np.array(pil_image, dtype=np.float32) / 255.0
     
-    # 4. CHW 변환 및 GPU 텐서 전송
-    img = np.transpose(img, (2, 0, 1))
-    tensor = torch.from_numpy(img).unsqueeze(0).to(device)
+    # 정규화
+    image_array -= np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    image_array /= np.array([0.229, 0.224, 0.225], dtype=np.float32)
     
-    # 5. Half Precision (FP16) 적용 - Jetson Nano 성능의 핵심
-    return tensor
+    # CHW 형식
+    image_array = np.transpose(image_array, (2, 0, 1))
+    
+    # 텐서로 변환
+    image_tensor = torch.from_numpy(image_array).float().unsqueeze(0)
+    
+    return image_tensor
 
-preprocess_image = preprocess_image_optimized
+preprocess_image = preprocess_image_manual
 
 # 모델 경로 설정
 MODELS = {
