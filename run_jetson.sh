@@ -6,6 +6,11 @@ echo "       Jetson Nano 이미지 캡셔닝 시스템"
 echo "======================================================================"
 echo ""
 
+# 최고 성능 모드 고정 (10W 모드)
+sudo nvpmodel -m 0
+# CPU/GPU 클럭 부스트
+sudo jetson_clocks
+
 # 메모리 확인
 TOTAL_MEM=$(free -h | grep Mem | awk '{print $2}')
 USED_MEM=$(free -h | grep Mem | awk '{print $3}')

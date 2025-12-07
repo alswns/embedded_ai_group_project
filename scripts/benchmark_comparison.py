@@ -14,9 +14,28 @@ import time
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib
 import psutil
 import sys
 from pathlib import Path
+
+# ★ 한글 폰트 설정
+matplotlib.rcParams['font.family'] = 'DejaVu Sans'
+matplotlib.rcParams['axes.unicode_minus'] = False
+try:
+    # Jetson Nano에서 한글 지원
+    import matplotlib.font_manager as fm
+    font_paths = [
+        '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf',
+    ]
+    for font_path in font_paths:
+        if os.path.exists(font_path):
+            fm.fontManager.addfont(font_path)
+            matplotlib.rcParams['font.family'] = 'Noto Sans CJK JP'
+            break
+except:
+    pass
 
 # 프로젝트 모듈
 from src.utils.memory_safe_import import load_model_class
@@ -182,24 +201,34 @@ def calculate_flops(model):
         # thop 라이브러리로 정확한 FLOPs 계산 시도
         if THOP_AVAILABLE:
             try:
-                dummy_input = torch.randn(1, 3, 224, 224).to(device)
-                if hasattr(model, 'float'):
-                    model_float = model.float()
-                    dummy_input_float = dummy_input.float()
-                    from thop import profile
-                    flops, params = profile(model_float, inputs=(dummy_input_float,), verbose=False)
-                else:
-                    from thop import profile
-                    flops, params = profile(model, inputs=(dummy_input,), verbose=False)
+                from thop import profile
                 
-                return float(flops / 1e6)  # Millions
+                # ★ 인코더만 프로파일링 (forward()에 captions 필요 없음)
+                if hasattr(model, 'encoder'):
+                    dummy_input = torch.randn(1, 3, 224, 224).to(device)
+                    if model.encoder.weight.dtype == torch.float16:
+                        dummy_input = dummy_input.half()
+                    
+                    flops, _ = profile(
+                        model.encoder,
+                        inputs=(dummy_input,),
+                        verbose=False
+                    )
+                    
+                    # 디코더 FLOPs 추정 (인코더 FLOPs의 약 50%)
+                    decoder_flops_estimate = flops * 0.5
+                    total_flops = flops + decoder_flops_estimate
+                    
+                    return float(total_flops / 1e6)  # Millions
             except Exception as e:
-                print("⚠️  thop 계산 실패: {}".format(e))
+                print("⚠️  thop 계산 실패: {}. 파라미터 기반 추정 사용".format(e))
     except:
         pass
     
     # 폴백: 파라미터 개수 기반 추정
-    # 일반적으로 FLOPs ≈ 2 × Parameters (순전파)
+    # 인코더(MobileNetV3): 약 2M params → 약 500M FLOPs
+    # 디코더(GRU+Attention): 약 0.5M params → 약 200M FLOPs
+    # 총: 약 2.5×params
     param_count = sum(p.numel() for p in model.parameters())
     estimated_flops = param_count * 2.5 / 1e6  # Millions
     
@@ -406,17 +435,17 @@ def plot_comparison(results):
     param_counts = [results[m]['total_params'] / 1e6 for m in model_names]  # Million
     flops_values = [results[m]['flops_millions'] for m in model_names]  # ★ FLOPs 추가
     
-    # 그래프 생성 (3x3으로 변경하여 7개 그래프 표시)
-    fig, axes = plt.subplots(3, 3, figsize=(18, 14))
-    fig.suptitle('Jetson Nano 모델 성능 비교 분석 (FLOPs 포함)', fontsize=16, fontweight='bold')
+    # 그래프 생성 (3x3으로 변경하여 6개 그래프 표시)
+    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+    fig.suptitle('Jetson Nano Model Performance Comparison', fontsize=16, fontweight='bold')
     
     # 색상 설정
     colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
     
     # 1. 추론 지연시간
     axes[0, 0].bar(range(len(model_names)), latencies, color=colors, alpha=0.8)
-    axes[0, 0].set_ylabel('지연시간 (ms)', fontsize=11, fontweight='bold')
-    axes[0, 0].set_title('① 평균 추론 지연시간', fontsize=12, fontweight='bold')
+    axes[0, 0].set_ylabel('Latency (ms)', fontsize=11, fontweight='bold')
+    axes[0, 0].set_title('1. Inference Latency', fontsize=12, fontweight='bold')
     axes[0, 0].set_xticks(range(len(model_names)))
     axes[0, 0].set_xticklabels([m.replace(' + ', '\n+ ') for m in model_names], fontsize=9)
     axes[0, 0].grid(axis='y', alpha=0.3)
@@ -426,7 +455,7 @@ def plot_comparison(results):
     # 2. FPS (처리량)
     axes[0, 1].bar(range(len(model_names)), fps_values, color=colors, alpha=0.8)
     axes[0, 1].set_ylabel('FPS', fontsize=11, fontweight='bold')
-    axes[0, 1].set_title('② 초당 프레임 수 (FPS)', fontsize=12, fontweight='bold')
+    axes[0, 1].set_title('2. Frames Per Second', fontsize=12, fontweight='bold')
     axes[0, 1].set_xticks(range(len(model_names)))
     axes[0, 1].set_xticklabels([m.replace(' + ', '\n+ ') for m in model_names], fontsize=9)
     axes[0, 1].grid(axis='y', alpha=0.3)
@@ -435,18 +464,19 @@ def plot_comparison(results):
     
     # 3. CPU 메모리 사용량
     axes[0, 2].bar(range(len(model_names)), memory_usage, color=colors, alpha=0.8)
-    axes[0, 2].set_ylabel('메모리 (MB)', fontsize=11, fontweight='bold')
-    axes[0, 2].set_title('③ CPU 메모리 사용량', fontsize=12, fontweight='bold')
+    axes[0, 2].set_ylabel('Memory (MB)', fontsize=11, fontweight='bold')
+    axes[0, 2].set_title('3. CPU Memory Usage', fontsize=12, fontweight='bold')
     axes[0, 2].set_xticks(range(len(model_names)))
     axes[0, 2].set_xticklabels([m.replace(' + ', '\n+ ') for m in model_names], fontsize=9)
     axes[0, 2].grid(axis='y', alpha=0.3)
     for i, v in enumerate(memory_usage):
         axes[0, 2].text(i, v + 10, '{:.0f}MB'.format(v), ha='center', fontsize=10, fontweight='bold')
+        axes[0, 2].text(i, v + 10, '{:.0f}MB'.format(v), ha='center', fontsize=10, fontweight='bold')
     
     # 4. 모델 크기
     axes[1, 0].bar(range(len(model_names)), model_sizes, color=colors, alpha=0.8)
-    axes[1, 0].set_ylabel('크기 (MB)', fontsize=11, fontweight='bold')
-    axes[1, 0].set_title('④ 모델 파일 크기', fontsize=12, fontweight='bold')
+    axes[1, 0].set_ylabel('Size (MB)', fontsize=11, fontweight='bold')
+    axes[1, 0].set_title('4. Model File Size', fontsize=12, fontweight='bold')
     axes[1, 0].set_xticks(range(len(model_names)))
     axes[1, 0].set_xticklabels([m.replace(' + ', '\n+ ') for m in model_names], fontsize=9)
     axes[1, 0].grid(axis='y', alpha=0.3)
@@ -455,38 +485,23 @@ def plot_comparison(results):
     
     # 5. 파라미터 개수
     axes[1, 1].bar(range(len(model_names)), param_counts, color=colors, alpha=0.8)
-    axes[1, 1].set_ylabel('파라미터 (Million)', fontsize=11, fontweight='bold')
-    axes[1, 1].set_title('⑤ 총 파라미터 개수', fontsize=12, fontweight='bold')
+    axes[1, 1].set_ylabel('Parameters (M)', fontsize=11, fontweight='bold')
+    axes[1, 1].set_title('5. Total Parameters', fontsize=12, fontweight='bold')
     axes[1, 1].set_xticks(range(len(model_names)))
     axes[1, 1].set_xticklabels([m.replace(' + ', '\n+ ') for m in model_names], fontsize=9)
     axes[1, 1].grid(axis='y', alpha=0.3)
     for i, v in enumerate(param_counts):
         axes[1, 1].text(i, v + 0.1, '{:.1f}M'.format(v), ha='center', fontsize=10, fontweight='bold')
     
-    # ★ 6. FLOPs (새로 추가)
+    # 6. FLOPs
     axes[1, 2].bar(range(len(model_names)), flops_values, color=colors, alpha=0.8)
     axes[1, 2].set_ylabel('FLOPs (Million)', fontsize=11, fontweight='bold')
-    axes[1, 2].set_title('⑥ 부동소수점 연산수 (FLOPs)', fontsize=12, fontweight='bold')
+    axes[1, 2].set_title('6. Floating Point Operations', fontsize=12, fontweight='bold')
     axes[1, 2].set_xticks(range(len(model_names)))
     axes[1, 2].set_xticklabels([m.replace(' + ', '\n+ ') for m in model_names], fontsize=9)
     axes[1, 2].grid(axis='y', alpha=0.3)
     for i, v in enumerate(flops_values):
         axes[1, 2].text(i, v + 50, '{:.0f}M'.format(v), ha='center', fontsize=10, fontweight='bold')
-    
-    # 7. 성능-메모리 트레이드오프 (Latency × Memory)
-    tradeoff = [lat * mem for lat, mem in zip(latencies, memory_usage)]
-    axes[2, 0].bar(range(len(model_names)), tradeoff, color=colors, alpha=0.8)
-    axes[2, 0].set_ylabel('트레이드오프 (ms×MB)', fontsize=11, fontweight='bold')
-    axes[2, 0].set_title('⑦ 성능-메모리 트레이드오프\n(낮을수록 우수)', fontsize=12, fontweight='bold')
-    axes[2, 0].set_xticks(range(len(model_names)))
-    axes[2, 0].set_xticklabels([m.replace(' + ', '\n+ ') for m in model_names], fontsize=9)
-    axes[2, 0].grid(axis='y', alpha=0.3)
-    for i, v in enumerate(tradeoff):
-        axes[2, 0].text(i, v + 10, '{:.0f}'.format(v), ha='center', fontsize=10, fontweight='bold')
-    
-    # 나머지 빈 서브플롯 숨기기
-    axes[2, 1].axis('off')
-    axes[2, 2].axis('off')
     
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     
@@ -545,7 +560,7 @@ def plot_comparison_table(results):
         for j in range(len(table_data[0]) + 1):
             table[(i + 1, j)].set_facecolor(colors[i % len(colors)])
     
-    plt.title('Jetson Nano 모델 성능 비교 상세표', fontsize=14, fontweight='bold', pad=20)
+    plt.title('Jetson Nano Model Performance Details', fontsize=14, fontweight='bold', pad=20)
     plt.savefig('benchmark_comparison_table.png', dpi=150, bbox_inches='tight')
     print("✅ 상세표 저장: benchmark_comparison_table.png")
 
