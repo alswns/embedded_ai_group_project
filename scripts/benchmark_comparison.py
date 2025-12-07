@@ -281,10 +281,15 @@ def calculate_meteor_from_test_data(model, word_map, rev_word_map, num_samples=1
                 
                 if reference_caption and generated_caption:
                     score = calculate_meteor_score(generated_caption, reference_caption)
-                    meteor_scores.append(score)
+                    # score가 None이 아니고 숫자인지 확인
+                    if score is not None and isinstance(score, (int, float)):
+                        # 0~1 범위로 클립
+                        score = max(0.0, min(1.0, float(score)))
+                        meteor_scores.append(score)
                     
-                    if (idx + 1) % 5 == 0:
-                        print("    [{}/{}] METEOR: {:.4f}".format(idx + 1, len(sample_images), score))
+                    if (idx + 1) % 5 == 0 and meteor_scores:
+                        current_avg = float(np.mean(meteor_scores))
+                        print("    [{}/{}] METEOR: {:.4f}".format(idx + 1, len(sample_images), current_avg))
                     
             except Exception as e:
                 continue
@@ -446,7 +451,11 @@ def benchmark_model(model, word_map, rev_word_map, model_name, config):
                     reference_caption = test_captions.get(img_name, '')
                     if reference_caption:
                         score = calculate_meteor_score(generated_caption, reference_caption)
-                        meteor_scores_benchmark.append(score)
+                        # score가 None이 아니고 숫자인지 확인
+                        if score is not None and isinstance(score, (int, float)):
+                            # 0~1 범위로 클립
+                            score = max(0.0, min(1.0, float(score)))
+                            meteor_scores_benchmark.append(score)
                 
                 if (i + 1) % 10 == 0:
                     if meteor_scores_benchmark:
