@@ -37,9 +37,6 @@ try:
     import sys
     import os
     
-
-    #이용가능한 메모리양 출력
-    
     from src.utils.memory_safe_import import load_model_class, load_quantization_func
     print("   ✅ 지연 로더 로드", file=sys.stderr)
     
@@ -322,7 +319,19 @@ def load_model(model_choice):
     
     try:
         print("\n📂 모델 로드 중: {}".format(model_path))
-
+        
+        # 프로젝트 모듈 실제 로드 (지연 로드)
+        print("  1️⃣  모델 클래스 로드...", file=sys.stderr)
+        try:
+            MobileNetCaptioningModel = _model_class_loader()
+            print("     ✅ 로드 완료", file=sys.stderr)
+        except Exception as e:
+            print("     ❌ 로드 실패: {}".format(e), file=sys.stderr)
+            return None, None, None, None
+        
+        print("  2️⃣  체크포인트 로드...", file=sys.stderr)
+        
+        # CPU에서 로드 (메모리 안전) - Python/PyTorch 버전 호환성
         try:
             # Python 3.11+: weights_only 파라미터 필요
             checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
@@ -358,44 +367,42 @@ def load_model(model_choice):
             print("      • Decoder Dim: {}".format(decoder_dim))
             print("      • Attention Dim: {}".format(attention_dim))
             
-            # 올바른 크기로 모델 생성 (CPU에서만)
+            # 올바른 크기로 모델 생성 (CPU에서만) - 메모리 최적화 사용
+            print("  3️⃣  모델 인스턴스 생성 (메모리 최적화)...", file=sys.stderr)
             try:
-                        
-                # 프로젝트 모듈 실제 로드 (지연 로드)
-                print(" 2️⃣  모델 클래스 로드...", file=sys.stderr)
-                try:
-                    MobileNetCaptioningModel = _model_class_loader()
-                    print("     ✅ 로드 완료", file=sys.stderr)
-                except Exception as e:
-                    print("     ❌ 로드 실패: {}".format(e), file=sys.stderr)
-                    return None, None, None, None
+                # 메모리 안전 모듈 import
+                from src.utils.memory_safe_import import safe_model_instantiation
                 
-                print("  1️⃣  체크포인트 로드...", file=sys.stderr)
-                
-                # CPU에서 로드 (메모리 안전) - Python/PyTorch 버전 호환성
-                model = MobileNetCaptioningModel(
-                    vocab_size=vocab_size, 
+                # 안전한 모델 생성
+                model = safe_model_instantiation(
+                    MobileNetCaptioningModel,
+                    vocab_size=vocab_size,
                     embed_dim=300,
                     decoder_dim=decoder_dim,
                     attention_dim=attention_dim
                 )
-                model = model.to(device)
+                print("     ✅ 생성 완료", file=sys.stderr)
             except Exception as e:
-                print("❌ 모델 생성 실패: {}".format(e))
+                print("     ❌ 생성 실패: {}".format(e), file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
                 return None, None, None, None
             
             # state_dict 로드 (strict=False로 호환되는 레이어만 로드)
+            print("  4️⃣  가중치 로드...", file=sys.stderr)
             try:
                 model.load_state_dict(state_dict, strict=False)
-                print("✅ 모델 상태 로드 완료")
+                print("     ✅ 로드 완료", file=sys.stderr)
             except Exception as e:
-                print("⚠️  상태 로드 중 경고: {}".format(e))
+                print("     ⚠️  로드 중 경고: {}".format(e), file=sys.stderr)
                 import traceback
                 traceback.print_exc()
             
             # 메모리 정리
+            print("  5️⃣  메모리 정리...", file=sys.stderr)
             del checkpoint, state_dict
             gc.collect()
+            print("     ✅ 정리 완료", file=sys.stderr)
             
             model.eval()
             
