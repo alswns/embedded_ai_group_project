@@ -38,11 +38,26 @@ print("\n2️⃣  심화 모듈 로드...", file=sys.stderr)
 try:
     from PIL import Image
     print("   ✅ PIL 로드 완료", file=sys.stderr)
+except Exception as e:
+    print("   ⚠️  PIL 로드 실패: {}".format(e), file=sys.stderr)
+
+# torchvision은 매우 위험 - 별도로 처리
+print("\n2-1️⃣  torchvision 로드 (매우 위험)...", file=sys.stderr)
+try:
+    # GPU 미리 비활성화
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    import torch
+    torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.benchmark = False
     
+    print("   ✅ PyTorch 환경 설정 완료", file=sys.stderr)
+    
+    # torchvision 로드 시도
     from torchvision import transforms
     print("   ✅ torchvision 로드 완료", file=sys.stderr)
 except Exception as e:
-    print("   ⚠️  시각화 라이브러리 로드 실패: {}".format(e), file=sys.stderr)
+    print("   ⚠️  torchvision 로드 실패: {}".format(e), file=sys.stderr)
+    print("   💡 대체 방법: 수동으로 이미지 전처리", file=sys.stderr)
 
 # 3. 프로젝트 모듈 로드
 print("\n3️⃣  프로젝트 모듈 로드...", file=sys.stderr)
