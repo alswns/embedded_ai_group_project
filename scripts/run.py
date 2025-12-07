@@ -50,7 +50,7 @@ print("✅ 모든 모듈 로드 완료", file=sys.stderr)
 # ============================================================================
 print("⚙️  환경 설정 중...", file=sys.stderr)
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-torch.backends.cudnn.enabled = True
+torch.backends.cudnn.enabled = False  # 불안정성 방지
 torch.backends.cudnn.benchmark = True # 입력 크기가 고정(224x224)이므로 필수
 
 # CPU/GPU 디바이스 자동 감지 및 강제 설정
