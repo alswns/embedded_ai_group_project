@@ -333,36 +333,44 @@ def load_model(model_choice):
             # 체크포인트에서 모델 크기 정보 추출
             state_dict = checkpoint['model_state_dict']
             
+            # ★ 핵심: state_dict에서 **실제 프루닝된 크기** 추출
             decoder_dim = checkpoint.get('decoder_dim', 512)
             attention_dim = checkpoint.get('attention_dim', 256)
             
-            # state_dict에서 크기 정보가 없으면 자동 추출
+            # state_dict에서 정확한 크기 추출 (프루닝된 실제 크기)
             if 'decoder.decode_step.weight_ih' in state_dict:
-                decoder_dim = state_dict['decoder.decode_step.weight_ih'].shape[0] // 3
+                # GRU의 input_size: (hidden_size * 3) 이므로 역으로 계산
+                actual_decoder_dim = state_dict['decoder.decode_step.weight_ih'].shape[0] // 3
+                decoder_dim = actual_decoder_dim
+                print("  📊 state_dict에서 decoder_dim 추출: {} (프루닝됨)".format(decoder_dim))
             
             if 'decoder.encoder_att.weight' in state_dict:
-                attention_dim = state_dict['decoder.encoder_att.weight'].shape[0]
+                actual_attention_dim = state_dict['decoder.encoder_att.weight'].shape[0]
+                attention_dim = actual_attention_dim
+                print("  📊 state_dict에서 attention_dim 추출: {} (프루닝됨)".format(attention_dim))
             
-            print("   📐 감지된 모델 구조:")
-            print("      • Decoder Dim: {}".format(decoder_dim))
-            print("      • Attention Dim: {}".format(attention_dim))
+            print("   📐 감지된 모델 구조 (프루닝된 크기):")
+            print("      • Decoder Dim: {} (프루닝됨)".format(decoder_dim))
+            print("      • Attention Dim: {} (프루닝됨)".format(attention_dim))
+            print("      • Vocab Size: {}".format(vocab_size))
             
-            # 올바른 크기로 모델 생성 (CPU에서만) - 메모리 최적화 사용
-            print("  3️⃣  모델 인스턴스 생성...", file=sys.stderr)
+            # ★ 올바른 크기(프루닝된 크기)로 모델 생성
+            print("  3️⃣  모델 인스턴스 생성 (프루닝된 크기)...", file=sys.stderr)
             try:
                 # 메모리 정리
                 gc.collect()
                 gc.collect()
                 gc.collect()
                 
-                # 간단한 모델 생성
+                # 프루닝된 크기로 모델 생성
                 model = Model(
                     vocab_size=vocab_size,
                     embed_dim=300,
-                    decoder_dim=decoder_dim,
-                    attention_dim=attention_dim
+                    decoder_dim=decoder_dim,      # ★ 프루닝된 크기
+                    attention_dim=attention_dim   # ★ 프루닝된 크기
                 )
-                print("     ✅ 생성 완료", file=sys.stderr)
+                print("     ✅ 생성 완료 (decoder_dim={}, attention_dim={})".format(
+                    decoder_dim, attention_dim), file=sys.stderr)
                 
                 # CPU 전환
                 model = model.cpu()
@@ -374,15 +382,21 @@ def load_model(model_choice):
                 traceback.print_exc(file=sys.stderr)
                 return None, None, None, None
             
-            # state_dict 로드 (strict=False로 호환되는 레이어만 로드)
+            # state_dict 로드 (완벽한 크기 매칭 - strict=True 사용 가능)
             print("  4️⃣  가중치 로드...", file=sys.stderr)
             try:
-                model.load_state_dict(state_dict, strict=False)
-                print("     ✅ 로드 완료", file=sys.stderr)
+                # ★ strict=True 사용: 모든 레이어가 정확히 매칭되어야 함
+                model.load_state_dict(state_dict, strict=True)
+                print("     ✅ 완벽한 크기 매칭으로 로드 완료", file=sys.stderr)
             except Exception as e:
-                print("     ⚠️  로드 중 경고: {}".format(e), file=sys.stderr)
-                import traceback
-                traceback.print_exc()
+                print("     ⚠️  strict=True 로드 실패, strict=False로 재시도: {}".format(e), file=sys.stderr)
+                try:
+                    model.load_state_dict(state_dict, strict=False)
+                    print("     ⚠️  일부 레이어만 로드됨", file=sys.stderr)
+                except Exception as e2:
+                    print("     ❌ 가중치 로드 실패: {}".format(e2), file=sys.stderr)
+                    import traceback
+                    traceback.print_exc(file=sys.stderr)
             
             # 메모리 정리
             print("  5️⃣  메모리 정리...", file=sys.stderr)
@@ -401,9 +415,17 @@ def load_model(model_choice):
             
             model_name = model_info['name']
             
+            # ★ 모델 크기 정보 출력
+            param_count = sum(p.numel() for p in model.parameters())
+            param_size = param_count * 4 / 1024 / 1024  # FP32 기준
+            
             print("\n✅ 모델 로드 완료")
             print("   모델: {}".format(model_name))
             print("   경로: {}".format(model_path))
+            print("   총 파라미터: {:,}개".format(param_count))
+            print("   모델 크기: {:.2f} MB (FP32)".format(param_size))
+            print("   디코더 차원: {} (프루닝됨)".format(decoder_dim))
+            print("   어텐션 차원: {} (프루닝됨)".format(attention_dim))
             
             return model, word_map, rev_word_map, model_name
         else:
@@ -415,7 +437,33 @@ def load_model(model_choice):
         import traceback
         traceback.print_exc()
         return None, None, None, None
-
+def gstreamer_pipeline(
+    sensor_id=0,
+    capture_width=1280,
+    capture_height=720,
+    display_width=640,
+    display_height=480,
+    framerate=30,
+    flip_method=0,
+):
+    # 'nvv4l2camerasrc' 또는 'nvarguscamerasrc'를 사용하여 하드웨어 가속 활용
+        return (
+            "nvarguscamerasrc sensor-id=%d ! "
+            "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
+            "nvvidconv flip-method=%d ! "
+            "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
+            "videoconvert ! "
+            "video/x-raw, format=(string)BGR ! appsink"
+            % (
+                sensor_id,
+                capture_width,
+                capture_height,
+                framerate,
+                flip_method,
+                display_width,
+                display_height,
+            )
+        )
 # ============================================================================
 # 양자화 적용 함수
 # ============================================================================
@@ -568,33 +616,7 @@ def main():
 
     # 카메라 초기화
     print("\n📹 카메라 초기화 중...")
-    def gstreamer_pipeline(
-    sensor_id=0,
-    capture_width=1280,
-    capture_height=720,
-    display_width=640,
-    display_height=480,
-    framerate=30,
-    flip_method=0,
-):
-    # 'nvv4l2camerasrc' 또는 'nvarguscamerasrc'를 사용하여 하드웨어 가속 활용
-        return (
-            "nvarguscamerasrc sensor-id=%d ! "
-            "video/x-raw(memory:NVMM), width=(int)%d, height=(int)%d, framerate=(fraction)%d/1 ! "
-            "nvvidconv flip-method=%d ! "
-            "video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! "
-            "videoconvert ! "
-            "video/x-raw, format=(string)BGR ! appsink"
-            % (
-                sensor_id,
-                capture_width,
-                capture_height,
-                framerate,
-                flip_method,
-                display_width,
-                display_height,
-            )
-        )
+    
     cap = cv2.VideoCapture(gstreamer_pipeline(), cv2.CAP_GSTREAMER)
     if not cap.isOpened():
         cap=cv2.VideoCapture(0)
