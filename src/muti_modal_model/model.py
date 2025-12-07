@@ -102,10 +102,10 @@ class Model(nn.Module):
         
         # [A] 인코더 설정 (MobileNetV3 Small)
         # width_mult를 조절해서 더 경량화 가능 (예: 0.5)
-        from torchvision import models
+        from torchvision.models import mobilenet_v3_small
         print("Initializing Model with width_mult={}".format(width_mult))
 
-        mobilenet = models.mobilenet_v3_small(weights=None, width_mult=width_mult)
+        mobilenet = mobilenet_v3_small(weights=None, width_mult=width_mult)
         print("MobileNetV3 Small initialized.")
         # 마지막 분류기(classifier)를 떼어내고, 특징 추출기(features)만 가져옴
         self.encoder = mobilenet.features
