@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from src.gru_model.model import LightweightCaptionDecoder
-
+import gc
 # class MobileNetCaptioningModel(nn.Module):
 #     def __init__(self, vocab_size, width_mult=1.0, embed_dim=256, decoder_dim=512, attention_dim=256):
 #         super(MobileNetCaptioningModel, self).__init__()
@@ -102,6 +102,7 @@ class Model(nn.Module):
         
         # [A] 인코더 설정 (MobileNetV3 Small)
         # width_mult를 조절해서 더 경량화 가능 (예: 0.5)
+        gc.collect()
         from torchvision.models import mobilenet_v3_small
         print("Initializing Model with width_mult={}".format(width_mult))
 
