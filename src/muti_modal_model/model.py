@@ -1,7 +1,7 @@
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import models
 from src.gru_model.model import LightweightCaptionDecoder
 
 class MobileNetCaptioningModel(nn.Module):
@@ -10,6 +10,7 @@ class MobileNetCaptioningModel(nn.Module):
         
         # [A] 인코더 설정 (MobileNetV3 Small)
         # width_mult를 조절해서 더 경량화 가능 (예: 0.5)
+        from torchvision import models
         mobilenet = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT, width_mult=width_mult)
         
         # 마지막 분류기(classifier)를 떼어내고, 특징 추출기(features)만 가져옴
