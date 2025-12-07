@@ -38,6 +38,7 @@ torch.set_num_interop_threads(1)
 device = torch.device("cpu")
 print("✅ 준비 완료", file=sys.stderr)
 sys.modules['numpy._core'] =np
+sys.modules['numpy._core.multiarray'] = np.core.multiarray
 # ============================================================================
 # 이미지 전처리 (torchvision 대체)
 # ============================================================================

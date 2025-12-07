@@ -417,7 +417,7 @@ def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_sample
                 # 진행도 표시 (100개마다)
                 if (i + 1) % 100 == 0:
                     current_avg = sum(meteor_scores) / len(meteor_scores)
-                    print("  진행: {}/{}, 현재 평균 METEOR: {}".format(i+1, total_samples, current_avg:.4f))
+                    print("  진행: {}/{}, 현재 평균 METEOR: {:.4f}".format(i+1, total_samples, current_avg))
                     
             except Exception as e:
                 print("  ⚠️ 샘플 {} 생성 실패: {}".format(i+1, e))
@@ -429,10 +429,10 @@ def evaluate_multiple_samples(model, dataset, word_map, rev_word_map, num_sample
     print("\n{'='*70}")
     print("📈 검증 데이터셋 METEOR 통계:")
     print("  • 평가 샘플: {}개".format(total_samples))
-    print("  • 평균 METEOR 점수: {}".format(avg_meteor:.4f))
+    print("  • 평균 METEOR 점수: {:.4f}".format(avg_meteor))
     if meteor_scores:
-        print("  • 최고 METEOR 점수: {}".format(max(meteor_scores):.4f))
-        print("  • 최저 METEOR 점수: {}".format(min(meteor_scores):.4f))
+        print("  • 최고 METEOR 점수: {:.4f}".format(max(meteor_scores)))
+        print("  • 최저 METEOR 점수: {:.4f}".format(min(meteor_scores)))
         print("  • METEOR 점수 분포:")
         print("    - 0.5 이상 (우수): {}개".format(sum([1 for s in meteor_scores if s >= 0.5])))
         print("    - 0.3-0.5 (양호): {}개".format(sum([1 for s in meteor_scores if 0.3 <= s < 0.5])))
