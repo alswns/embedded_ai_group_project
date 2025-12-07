@@ -372,7 +372,7 @@ def load_model(model_choice):
             try:
                 # 메모리 안전 모듈 import
                 from src.utils.memory_safe_import import safe_model_instantiation
-                
+                print("     ✅ 메모리 안전 모듈 로드 완료", file=sys.stderr)
                 # 안전한 모델 생성
                 model = safe_model_instantiation(
                     MobileNetCaptioningModel,
