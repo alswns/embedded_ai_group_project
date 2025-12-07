@@ -17,19 +17,7 @@ from src.utils.model_utils import get_model_size_mb
 # ============================================================================
 # 환경 설정
 # ============================================================================
-# Jetson Nano 최적화 (CPU 전용)
 
-os.environ['CUDA_VISIBLE_DEVICES'] = ''  # GPU 비활성화
-torch.backends.cudnn.enabled = False  # cuDNN 비활성화
-torch.backends.cudnn.benchmark = False
-
-# CPU 메모리 최적화
-torch.set_num_threads(2)  # CPU 스레드 제한
-torch.set_num_interop_threads(1)
-
-# 디바이스 선택 (강제 CPU)
-device = torch.device("cpu")
-print("디바이스: {} (GPU 비활성화됨)".format(device))
 
 # 모델 경로 설정
 MODELS = {
