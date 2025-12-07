@@ -228,7 +228,9 @@ def main():
     print("✅ 완료\n")
     
     # 카메라
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0,cv2.CAP_V4L2)
+    if not cap.isOpened():
+        cap=cv2.VideoCapture(0)
     if not cap.isOpened():
         print("❌ 카메라 없음")
         return

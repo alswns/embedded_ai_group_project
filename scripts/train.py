@@ -652,7 +652,7 @@ def main():
         # 학습 에포크
         avg_train_loss = train_epoch(model, train_dataloader, criterion, optimizer, epoch, vocab_size, scaler, use_mixed_precision)
         train_losses.append(avg_train_loss)
-        print("✅ 학습 완료. 평균 Loss: {}".format(avg_train_loss:.4f))
+        print("✅ 학습 완료. 평균 Loss: {:.4f}".format(avg_train_loss))
         
         # 검증 에포크 (Loss + METEOR 점수 계산)
         print("\n🔍 검증 시작...")
@@ -661,13 +661,13 @@ def main():
             word_map=word_map, rev_word_map=rev_word_map
         )
         val_losses.append(avg_val_loss)
-        print("✅ 검증 완료. 평균 Loss: {}".format(avg_val_loss:.4f))
-        print("⭐ 평균 METEOR: {}".format(avg_meteor:.4f))
+        print("✅ 검증 완료. 평균 Loss: {:.4f}".format(avg_val_loss))
+        print("⭐ 평균 METEOR: {:.4f}".format(avg_meteor))
         
         # 스케줄러 업데이트 (METEOR 점수 기반)
         scheduler.step(avg_meteor)
         current_lr = optimizer.param_groups[0]['lr']
-        print("📊 스케줄러 업데이트 - METEOR: {}, Learning Rate: {}".format(avg_meteor:.4f, current_lr:.2e))
+        print("📊 스케줄러 업데이트 - METEOR: {:.4f}, Learning Rate: {:.2e}".format(avg_meteor, current_lr))
         
         # [옵션] 특정 Epoch 이후에 인코더도 같이 학습시키고 싶다면? (Fine-tuning)
         if ENCODER_FINE_TUNING and epoch == 5:
@@ -686,7 +686,7 @@ def main():
             )
 
         # 주기적으로 모델 저장
-        save_path = os.path.join(MODEL_SAVE_DIR, "lightweight_captioning_model_{}_epoch_meteor_{}.pth".format(epoch+1, avg_meteor:.4f))
+        save_path = os.path.join(MODEL_SAVE_DIR, "lightweight_captioning_model_{}_epoch_meteor_{:.4f}.pth".format(epoch+1, avg_meteor))
         try:
             torch.save({
                 'model_state_dict': model.state_dict(),
@@ -722,11 +722,11 @@ def main():
         print("\n{'='*70}")
         print("📊 학습 완료 통계:")
         print("{'='*70}")
-        print("  • 최종 학습 손실: {}".format(train_losses[-1]:.4f))
-        print("  • 최종 검증 손실: {}".format(val_losses[-1]:.4f))
-        print("  • 최소 검증 손실: {} (Epoch {})".format(min(val_losses):.4f, val_losses.index(min(val_losses))+1))
-        print("  • 학습 손실 개선도: {}%".format(((train_losses[0]-train_losses[-1])/train_losses[0]*100):.2f))
-        print("  • 검증 손실 개선도: {}%".format(((val_losses[0]-val_losses[-1])/val_losses[0]*100):.2f))
+        print("  • 최종 학습 손실: {:.4f}".format(train_losses[-1]))
+        print("  • 최종 검증 손실: {:.4f}".format(val_losses[-1]))
+        print("  • 최소 검증 손실: {:.4f} (Epoch {})".format(min(val_losses), val_losses.index(min(val_losses))+1))
+        print("  • 학습 손실 개선도: {:.2f}%".format(((train_losses[0]-train_losses[-1])/train_losses[0]*100)))
+        print("  • 검증 손실 개선도: {:.2f}%".format(((val_losses[0]-val_losses[-1])/val_losses[0]*100)))
         print("{'='*70}\n")
     except Exception as e:
         print("❌ 최종 모델 저장 실패: {}".format(e))
