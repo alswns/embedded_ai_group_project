@@ -8,14 +8,9 @@ torchvision 없이 수동 이미지 처리
 import cv2
 import numpy as np
 import os
-import threading
-import tempfile
 import time
-import psutil
 import gc
 import sys
-import os 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 print("📦 안전 모듈 로드...", file=sys.stderr)
 
 # 1. 필수 모듈만 로드
