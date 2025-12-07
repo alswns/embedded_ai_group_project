@@ -70,18 +70,18 @@ print("✅ 모든 모듈 로드 완료", file=sys.stderr)
 # ============================================================================
 print("⚙️  환경 설정 중...", file=sys.stderr)
 
-# # GPU 완전 비활성화 (CPU 전용)
-# os.environ['CUDA_VISIBLE_DEVICES'] = ''
-# torch.backends.cudnn.enabled = False
-# torch.backends.cudnn.benchmark = False
+# GPU 완전 비활성화 (CPU 전용)
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
+torch.backends.cudnn.enabled = False
+torch.backends.cudnn.benchmark = False
 
-# # CPU 스레드 제한
-# torch.set_num_threads(2)
-# torch.set_num_interop_threads(1)
+# CPU 스레드 제한
+torch.set_num_threads(2)
+torch.set_num_interop_threads(1)
 
-# # 디바이스 설정 (강제 CPU)
-# device = torch.device("cpu")
-# print("📍 디바이스: CPU (GPU 비활성화됨)", file=sys.stderr)
+# 디바이스 설정 (강제 CPU)
+device = torch.device("cpu")
+print("📍 디바이스: CPU (GPU 비활성화됨)", file=sys.stderr)
 
 sys.modules['numpy._core'] = np.core
 sys.modules['numpy._core.multiarray'] = np.core.multiarray
@@ -368,20 +368,26 @@ def load_model(model_choice):
             print("      • Attention Dim: {}".format(attention_dim))
             
             # 올바른 크기로 모델 생성 (CPU에서만) - 메모리 최적화 사용
-            print("  3️⃣  모델 인스턴스 생성 (메모리 최적화)...", file=sys.stderr)
+            print("  3️⃣  모델 인스턴스 생성...", file=sys.stderr)
             try:
-                # 메모리 안전 모듈 import
-                from src.utils.memory_safe_import import safe_model_instantiation
-                print("     ✅ 메모리 안전 모듈 로드 완료", file=sys.stderr)
-                # 안전한 모델 생성
-                model = safe_model_instantiation(
-                    MobileNetCaptioningModel,
+                # 메모리 정리
+                gc.collect()
+                gc.collect()
+                gc.collect()
+                
+                # 간단한 모델 생성
+                model = MobileNetCaptioningModel(
                     vocab_size=vocab_size,
                     embed_dim=300,
                     decoder_dim=decoder_dim,
                     attention_dim=attention_dim
                 )
                 print("     ✅ 생성 완료", file=sys.stderr)
+                
+                # CPU 전환
+                model = model.cpu()
+                model.eval()
+                
             except Exception as e:
                 print("     ❌ 생성 실패: {}".format(e), file=sys.stderr)
                 import traceback
