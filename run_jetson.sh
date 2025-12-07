@@ -60,7 +60,7 @@ echo "======================================================================"
 echo ""
 
 # 실행
-python3 scripts/run.py
+python3 -m scripts.run
 
 # 종료 후 정리
 echo ""
