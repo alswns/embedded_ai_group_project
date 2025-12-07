@@ -299,6 +299,17 @@ def load_model(model_choice):
     try:
         print("\n📂 모델 로드 중: {}".format(model_path))
         
+        # 프로젝트 모듈 실제 로드 (지연 로드)
+        print("  1️⃣  모델 클래스 로드...", file=sys.stderr)
+        try:
+            MobileNetCaptioningModel = _model_class_loader()
+            print("     ✅ 로드 완료", file=sys.stderr)
+        except Exception as e:
+            print("     ❌ 로드 실패: {}".format(e), file=sys.stderr)
+            return None, None, None, None
+        
+        print("  2️⃣  체크포인트 로드...", file=sys.stderr)
+        
         # CPU에서 로드 (메모리 안전) - Python/PyTorch 버전 호환성
         try:
             # Python 3.11+: weights_only 파라미터 필요
@@ -306,6 +317,8 @@ def load_model(model_choice):
         except TypeError:
             # Python 3.6-3.10: weights_only 파라미터 미지원
             checkpoint = torch.load(model_path, map_location='cpu')
+        
+        print("     ✅ 로드 완료", file=sys.stderr)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             word_map = checkpoint.get('word_map')
@@ -419,6 +432,15 @@ def apply_quantization(model, quant_choice, model_name):
         # INT8 - Dynamic Quantization
         print("\n📊 양자화 적용 중: {}".format(quant_name))
         try:
+            # 양자화 함수 로드 (지연 로드)
+            print("  양자화 함수 로드...", file=sys.stderr)
+            try:
+                apply_dynamic_quantization = _quantization_loader()
+                print("  ✅ 로드 완료", file=sys.stderr)
+            except Exception as e:
+                print("  ⚠️  로드 실패: {}".format(e), file=sys.stderr)
+                return model, model_name
+            
             # CPU 기반 INT8 양자화 (안전 버전)
             model = model.cpu()
             model.eval()
