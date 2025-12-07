@@ -384,7 +384,7 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
 # ============================================================================
 def main():
     # 성능 모니터 생성
-    
+    print("\n📊 성능 모니터링 초기화 중...")
     
     # 모델 선택
     model_choice = select_model()
