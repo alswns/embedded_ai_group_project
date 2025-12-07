@@ -122,7 +122,14 @@ def load_model(model_choice):
     
     try:
         print("📂 모델 로드: {}".format(path))
-        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        
+        # Python/PyTorch 버전 호환성
+        try:
+            # Python 3.11+: weights_only 파라미터 필요
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        except TypeError:
+            # Python 3.6-3.10: weights_only 파라미터 미지원
+            checkpoint = torch.load(path, map_location='cpu')
         
         if not isinstance(checkpoint, dict) or 'model_state_dict' not in checkpoint:
             print("❌ 유효하지 않은 모델 파일")

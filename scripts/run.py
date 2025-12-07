@@ -317,8 +317,13 @@ def load_model(model_choice):
     try:
         print("\n📂 모델 로드 중: {}".format(model_path))
         
-        # CPU에서 로드 (메모리 안전)
-        checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+        # CPU에서 로드 (메모리 안전) - Python/PyTorch 버전 호환성
+        try:
+            # Python 3.11+: weights_only 파라미터 필요
+            checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+        except TypeError:
+            # Python 3.6-3.10: weights_only 파라미터 미지원
+            checkpoint = torch.load(model_path, map_location='cpu')
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             word_map = checkpoint.get('word_map')

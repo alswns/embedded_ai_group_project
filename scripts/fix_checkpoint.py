@@ -14,7 +14,14 @@ def fix_pruned_checkpoint():
         return
     
     print("📂 체크포인트 로드 중: {}".format(checkpoint_path))
-    checkpoint = torch.load(checkpoint_path, weights_only=False)
+    
+    # Python/PyTorch 버전 호환성
+    try:
+        # Python 3.11+: weights_only 파라미터 필요
+        checkpoint = torch.load(checkpoint_path, weights_only=False)
+    except TypeError:
+        # Python 3.6-3.10: weights_only 파라미터 미지원
+        checkpoint = torch.load(checkpoint_path)
     
     # 체크포인트 구조 확인
     print("\n📋 체크포인트 구조:")

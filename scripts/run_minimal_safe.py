@@ -37,7 +37,7 @@ torch.set_num_interop_threads(1)
 
 device = torch.device("cpu")
 print("✅ 준비 완료", file=sys.stderr)
-
+sys.modules['numpy._core'] =np
 # ============================================================================
 # 이미지 전처리 (torchvision 대체)
 # ============================================================================
@@ -89,8 +89,14 @@ def load_model_from_checkpoint(path):
     print("📂 체크포인트 로드: {}".format(path), file=sys.stderr)
     
     try:
-        # 체크포인트만 로드 (프로젝트 모듈 import 안 함)
-        checkpoint = torch.load(path, map_location='cpu')
+        # Python/PyTorch 버전 호환성 처리
+        try:
+            # Python 3.11+: weights_only 파라미터 필요
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        except TypeError:
+            # Python 3.6-3.10: weights_only 파라미터 미지원
+            checkpoint = torch.load(path, map_location='cpu')
+        
         print("  ✅ 파일 로드", file=sys.stderr)
         
         # 메타데이터 추출

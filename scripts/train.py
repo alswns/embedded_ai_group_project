@@ -366,7 +366,7 @@ def validate_epoch(model, val_dataloader, criterion, epoch, vocab_size, word_map
                     meteor_scores.append(0.0)
             
             if i % 10 == 0:
-                print("  Validation Step [{}/{}], Loss: {}".format(i, len(val_dataloader), loss.item():.4f))
+                print("  Validation Step [{}/{}], Loss: {:.4f}".format(i, len(val_dataloader), loss.item()))
     
     avg_val_loss = total_val_loss / len(val_dataloader)
     avg_meteor = sum(meteor_scores) / len(meteor_scores) if meteor_scores else 0.0
@@ -574,7 +574,14 @@ def main():
     if os.path.exists(checkpoint_path):
         print("📂 체크포인트 발견: {}".format(checkpoint_path))
         try:
-            checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+            # Python/PyTorch 버전 호환성
+            try:
+                # Python 3.11+: weights_only 파라미터 필요
+                checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+            except TypeError:
+                # Python 3.6-3.10: weights_only 파라미터 미지원
+                checkpoint = torch.load(checkpoint_path, map_location=device)
+            
             if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['model_state_dict'])
                 start_epoch = checkpoint.get('epoch', 0)

@@ -14,7 +14,14 @@ def safe_load_checkpoint(path):
     """안전한 체크포인트 로드"""
     print("  체크포인트 로드...", file=sys.stderr)
     try:
-        checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        # Python/PyTorch 버전 호환성
+        try:
+            # Python 3.11+: weights_only 파라미터 필요
+            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
+        except TypeError:
+            # Python 3.6-3.10: weights_only 파라미터 미지원
+            checkpoint = torch.load(path, map_location='cpu')
+        
         print("    ✅ 로드 성공", file=sys.stderr)
         return checkpoint
     except Exception as e:
