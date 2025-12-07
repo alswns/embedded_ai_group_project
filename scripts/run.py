@@ -6,16 +6,21 @@ import threading
 import tempfile
 import time
 import psutil
+import gc
 from PIL import Image
 from torchvision import transforms
 from gtts import gTTS
 import pygame
 from src.muti_modal_model.model import MobileNetCaptioningModel
 from src.utils.quantization_utils import apply_dynamic_quantization
-
+from src.utils.model_utils import get_model_size_mb
 # ============================================================================
 # 환경 설정
 # ============================================================================
+# Jetson Nano 최적화
+torch.backends.cudnn.enabled = False  # cuDNN 비활성화 (메모리 절약)
+torch.backends.cudnn.benchmark = False
+
 # 디바이스 선택
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("디바이스: {}".format(device))
@@ -34,6 +39,13 @@ MODELS = {
     }
 }
 
+# 양자화 옵션
+QUANTIZE_OPTIONS = {
+    '1': {'name': 'FP32 (원본)', 'enabled': False},
+    '2': {'name': 'FP16 (Half Precision)', 'enabled': True},
+    '3': {'name': 'INT8 (Dynamic Quantization)', 'enabled': True}
+}
+
 # 이미지 전처리
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -47,12 +59,12 @@ transform = transforms.Compose([
 # ============================================================================
 class PerformanceMonitor:
     """모델 성능 모니터링"""
-    def __init__(self):
+    def __init__(self,model):
         self.inference_times = []
         self.memory_usage = []
         self.gpu_memory = []
         self.process = psutil.Process(os.getpid())
-    
+        print("모델 크기 {:.2f} MB".format(get_model_size_mb(model)))
     def record_inference(self, inference_time):
         """추론 시간 기록"""
         self.inference_times.append(inference_time)
@@ -111,20 +123,20 @@ class PerformanceMonitor:
         print("\n" + "="*70)
         print("=== 성능 통계 (JTOPS 스타일) ===")
         print("="*70)
-        print(f"⏱️  추론 시간 (Latency):")
-        print(f"    • 평균: {stats['mean_latency_ms']:.2f} ms")
-        print(f"    • 중앙값: {stats['median_latency_ms']:.2f} ms")
-        print(f"    • 최소/최대: {stats['min_latency_ms']:.2f} / {stats['max_latency_ms']:.2f} ms")
-        print(f"    • 표준편차: {stats['std_latency_ms']:.2f} ms")
-        print(f"\n🎬 처리 속도 (Throughput):")
-        print(f"    • FPS: {stats['fps']:.1f} frame/sec")
-        print(f"    • 1프레임 처리: {stats['mean_latency_ms']:.2f} ms")
-        print(f"\n💾 메모리 사용량:")
-        print(f"    • CPU: {stats['cpu_memory_mb']:.1f} MB")
+        print("⏱️  추론 시간 (Latency):")
+        print("    • 평균: {:.2f} ms".format(stats['mean_latency_ms']))
+        print("    • 중앙값: {:.2f} ms".format(stats['median_latency_ms']))
+        print("    • 최소/최대: {:.2f} / {:.2f} ms".format(stats['min_latency_ms'], stats['max_latency_ms']))
+        print("    • 표준편차: {:.2f} ms".format(stats['std_latency_ms']))
+        print("\n🎬 처리 속도 (Throughput):")
+        print("    • FPS: {:.1f} frame/sec".format(stats['fps']))
+        print("    • 1프레임 처리: {:.2f} ms".format(stats['mean_latency_ms']))
+        print("\n💾 메모리 사용량:")
+        print("    • CPU: {:.1f} MB".format(stats['cpu_memory_mb']))
         if device.type in ['cuda', 'mps']:
-            print(f"    • GPU: {stats['gpu_memory_mb']:.1f} MB")
-        print(f"\n📊 누적 통계:")
-        print(f"    • 총 추론 횟수: {stats['total_inferences']}회")
+            print("    • GPU: {:.1f} MB".format(stats['gpu_memory_mb']))
+        print("\n📊 누적 통계:")
+        print("    • 총 추론 횟수: {}회".format(stats['total_inferences']))
         print("="*70 + "\n")
 
 # ============================================================================
@@ -146,6 +158,26 @@ def select_model():
     while True:
         choice = input("모델을 선택하세요 (1-2): ").strip()
         if choice in MODELS:
+            return choice
+        print("❌ 잘못된 입력입니다. 다시 선택해주세요.")
+
+# ============================================================================
+# 양자화 선택 함수
+# ============================================================================
+def select_quantization():
+    """사용할 양자화 옵션 선택"""
+    print("\n" + "="*70)
+    print("=== 양자화 옵션 선택 ===")
+    print("="*70)
+    
+    for key, quant_info in QUANTIZE_OPTIONS.items():
+        enabled = "✅" if quant_info['enabled'] else "❌"
+        print("{}. {} {}".format(key, quant_info['name'], enabled))
+    
+    print()
+    while True:
+        choice = input("양자화 옵션을 선택하세요 (1-3): ").strip()
+        if choice in QUANTIZE_OPTIONS:
             return choice
         print("❌ 잘못된 입력입니다. 다시 선택해주세요.")
 
@@ -197,7 +229,7 @@ def load_model(model_choice):
         if model_info['fallback']:
             model_path = model_info['fallback']
             if not os.path.exists(model_path):
-                print(f"❌ 모델 파일을 찾을 수 없습니다: {model_info['path']}")
+                print("❌ 모델 파일을 찾을 수 없습니다: {}".format(model_info['path']))
                 return None, None, None, None
         else:
             print("❌ 모델 파일을 찾을 수 없습니다: {}".format(model_path))
@@ -229,7 +261,7 @@ def load_model(model_choice):
             if 'decoder.encoder_att.weight' in state_dict:
                 attention_dim = state_dict['decoder.encoder_att.weight'].shape[0]
             
-            print(f"   📐 감지된 모델 구조:")
+            print("   📐 감지된 모델 구조:")
             print("      • Decoder Dim: {}".format(decoder_dim))
             print("      • Attention Dim: {}".format(attention_dim))
             
@@ -244,24 +276,20 @@ def load_model(model_choice):
             # state_dict 로드 (strict=False로 호환되는 레이어만 로드)
             try:
                 model.load_state_dict(state_dict, strict=False)
-                print(f"✅ 모델 상태 로드 완료")
+                print("✅ 모델 상태 로드 완료")
             except Exception as e:
                 print("⚠️  상태 로드 중 경고: {}".format(e))
+            
+            # 메모리 정리
+            del checkpoint, state_dict
+            gc.collect()
             
             model.eval()
             
             model_name = model_info['name']
             
-            # 모델 크기 계산
-            param_size = sum(p.numel() * p.element_size() for p in model.parameters()) / 1024 / 1024
-            buffer_size = sum(b.numel() * b.element_size() for b in model.buffers()) / 1024 / 1024
-            total_params = sum(p.numel() for p in model.parameters())
-            
             print("\n✅ 모델 로드 완료")
             print("   모델: {}".format(model_name))
-            print("   단어장 크기: {}".format(vocab_size))
-            print("   총 파라미터: {:,}".format(total_params))
-            print("   모델 크기: {:.2f} MB".format(param_size + buffer_size))
             print("   경로: {}".format(model_path))
             
             return model, word_map, rev_word_map, model_name
@@ -274,6 +302,45 @@ def load_model(model_choice):
         import traceback
         traceback.print_exc()
         return None, None, None, None
+
+# ============================================================================
+# 양자화 적용 함수
+# ============================================================================
+def apply_quantization(model, quant_choice, model_name):
+    """모델에 양자화 적용"""
+    quant_info = QUANTIZE_OPTIONS[quant_choice]
+    quant_name = quant_info['name']
+    
+    if quant_choice == '1':
+        # FP32 - 양자화 없음
+        print("\n✅ FP32 (양자화 없음)")
+        return model, model_name
+    
+    elif quant_choice == '2':
+        # FP16 - Half Precision
+        print("\n📊 양자화 적용 중: {}".format(quant_name))
+        try:
+            model = model.half()
+            model_name = "{} + FP16".format(model_name)
+            print("✅ FP16 양자화 완료")
+            return model, model_name
+        except Exception as e:
+            print("⚠️ FP16 변환 실패: {}".format(e))
+            return model, model_name
+    
+    elif quant_choice == '3':
+        # INT8 - Dynamic Quantization
+        print("\n📊 양자화 적용 중: {}".format(quant_name))
+        try:
+            quantized_model = apply_dynamic_quantization(model)
+            print("✅ INT8 양자화 완료")
+            model_name = "{} + INT8".format(model_name)
+            return quantized_model, model_name
+        except Exception as e:
+            print("⚠️ INT8 양자화 실패: {}. 원본 모델로 계속합니다.".format(e))
+            return model, model_name
+    
+    return model, model_name
 
 # ============================================================================
 # 캡션 생성 함수
@@ -290,8 +357,17 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
         
         # 캡션 생성
         start_time = time.time()
-        with torch.no_grad():
-            generated_words = model.generate(image_tensor, word_map, rev_word_map, max_len=50)
+        try:
+            with torch.no_grad():
+                generated_words = model.generate(image_tensor, word_map, rev_word_map, max_len=50)
+        except RuntimeError as e:
+            print("경고: 메모리 부족 - {}".format(e))
+            gc.collect()
+            return None, 0.0
+        finally:
+            # 이미지 텐서 메모리 해제
+            del image_tensor
+            gc.collect()
         
         inference_time = (time.time() - start_time) * 1000
         
@@ -308,7 +384,7 @@ def generate_caption_from_image(model, word_map, rev_word_map, frame):
 # ============================================================================
 def main():
     # 성능 모니터 생성
-    monitor = PerformanceMonitor()
+    
     
     # 모델 선택
     model_choice = select_model()
@@ -319,6 +395,15 @@ def main():
         print("❌ 모델을 로드할 수 없습니다.")
         return
     
+    # 메모리 경고 임계값 (Jetson Nano 4GB 기준)
+    MEMORY_WARNING_THRESHOLD = 2500  # MB
+    
+    # 양자화 선택 및 적용
+    quant_choice = select_quantization()
+    model, model_name = apply_quantization(model, quant_choice, model_name)
+    
+    monitor = PerformanceMonitor(model)
+
     # 카메라 초기화
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -338,6 +423,7 @@ def main():
     last_caption = None
     is_processing = False
     current_model_name = model_name
+    frame_count = 0
     
     while True:
         ret, frame = cap.read()
@@ -347,6 +433,14 @@ def main():
         
         # 메모리 기록
         monitor.record_memory()
+        
+        # 메모리 모니터링 (5프레임마다)
+        frame_count += 1
+        if frame_count % 5 == 0:
+            current_mem = monitor.get_cpu_memory_mb()
+            if current_mem > MEMORY_WARNING_THRESHOLD:
+                print("⚠️  높은 메모리 사용: {:.0f}MB - 정리 중...".format(current_mem))
+                gc.collect()
         
         # 처리 중 표시
         if is_processing:
@@ -361,9 +455,9 @@ def main():
         # 성능 지표 표시
         stats = monitor.get_stats()
         if stats:
-            fps_text = f"FPS: {stats['fps']:.1f}"
-            latency_text = f"Latency: {stats['mean_latency_ms']:.1f}ms"
-            mem_text = f"CPU: {stats['cpu_memory_mb']:.0f}MB"
+            fps_text = "FPS: {:.1f}".format(stats['fps'])
+            latency_text = "Latency: {:.1f}ms".format(stats['mean_latency_ms'])
+            mem_text = "CPU: {:.0f}MB".format(stats['cpu_memory_mb'])
             
             cv2.putText(frame, fps_text, (10, frame.shape[0] - 32),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
@@ -373,7 +467,7 @@ def main():
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
             
             if device.type in ['cuda', 'mps']:
-                gpu_text = f"GPU: {stats['gpu_memory_mb']:.0f}MB"
+                gpu_text = "GPU: {:.0f}MB".format(stats['gpu_memory_mb'])
                 cv2.putText(frame, gpu_text, (frame.shape[1] - 250, frame.shape[0] - 12),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         
@@ -458,9 +552,13 @@ def main():
                 print("❌ 모델을 로드할 수 없습니다.")
                 return
             
+            # 양자화 선택 및 적용
+            quant_choice = select_quantization()
+            model, model_name = apply_quantization(model, quant_choice, model_name)
+            
             current_model_name = model_name
             last_caption = None
-            monitor = PerformanceMonitor()  # 새 모니터 생성
+            monitor = PerformanceMonitor(model)  # 새 모니터 생성
             
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
