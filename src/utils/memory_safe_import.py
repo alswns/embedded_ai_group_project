@@ -129,9 +129,9 @@ def lazy_load_model_class():
         
         # Import
         print("로드 중: MobileNetCaptioningModel", file=sys.stderr)
-        from src.muti_modal_model.model import MobileNetCaptioningModel
+        from src.muti_modal_model.model import Model
         print("✅ 로드 완료", file=sys.stderr)
-        return MobileNetCaptioningModel
+        return Model
         
     except MemoryError as e:
         print("❌ 메모리 부족", file=sys.stderr)
