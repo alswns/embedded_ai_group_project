@@ -32,36 +32,16 @@ except ImportError:
 
 # 프로젝트 모듈 지연 로드
 print("   ℹ️  프로젝트 모듈 (지연 로드 준비)", file=sys.stderr)
-try:
-    # 지연 로더 import (매우 간단함)
-    import sys
-    import os
+
+# 지연 로더 import (매우 간단함)
+from src.utils.memory_safe_import import load_model_class, load_quantization_func
+print("   ✅ 지연 로더 로드", file=sys.stderr)
+
+# 아직 실제 로드는 안 됨
+_model_class_loader = load_model_class
+_quantization_loader = load_quantization_func
     
-    from src.utils.memory_safe_import import load_model_class, load_quantization_func
-    print("   ✅ 지연 로더 로드", file=sys.stderr)
-    
-    # 아직 실제 로드는 안 됨
-    _model_class_loader = load_model_class
-    _quantization_loader = load_quantization_func
-    
-except ImportError as e:
-    print("   ⚠️  지연 로더 로드 실패: {}".format(e), file=sys.stderr)
-    print("   → 직접 import로 전환...", file=sys.stderr)
-    
-    # 폴백: 직접 import (메모리 위험)
-    try:
-        from src.muti_modal_model.model import MobileNetCaptioningModel
-        from src.utils.quantization_utils import apply_dynamic_quantization
-        
-        _model_class_loader = lambda: MobileNetCaptioningModel
-        _quantization_loader = lambda: apply_dynamic_quantization
-        print("   ✅ 직접 import 성공", file=sys.stderr)
-    except ImportError as e2:
-        print("❌ 프로젝트 모듈 로드 실패: {}".format(e2), file=sys.stderr)
-        sys.exit(1)
-except Exception as e:
-    print("❌ 예상 불가능한 오류: {}".format(e), file=sys.stderr)
-    sys.exit(1)
+
 
 print("✅ 모든 모듈 로드 완료", file=sys.stderr)
 
@@ -323,7 +303,7 @@ def load_model(model_choice):
         # 프로젝트 모듈 실제 로드 (지연 로드)
         print("  1️⃣  모델 클래스 로드...", file=sys.stderr)
         try:
-            MobileNetCaptioningModel = _model_class_loader()
+            Model = _model_class_loader()
             print("     ✅ 로드 완료", file=sys.stderr)
         except Exception as e:
             print("     ❌ 로드 실패: {}".format(e), file=sys.stderr)
@@ -376,7 +356,7 @@ def load_model(model_choice):
                 gc.collect()
                 
                 # 간단한 모델 생성
-                model = MobileNetCaptioningModel(
+                model = Model(
                     vocab_size=vocab_size,
                     embed_dim=300,
                     decoder_dim=decoder_dim,
