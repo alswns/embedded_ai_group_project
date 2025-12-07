@@ -97,7 +97,7 @@ import gc
         
 #껍데기
 class Model(nn.Module):
-    def __init__(self, vocab_size, width_mult=1.0, embed_dim=256, decoder_dim=512, attention_dim=256, device=torch.device("cpu")):
+    def __init__(self, vocab_size, width_mult=1.0, embed_dim=256, decoder_dim=512, attention_dim=256):
         super(Model, self).__init__()
         
         # [A] 인코더 설정 (MobileNetV3 Small)
@@ -149,12 +149,14 @@ class Model(nn.Module):
         
         return outputs, alphas
 
-    def generate(self, image, word_map, rev_word_map, max_len=20):
+    def generate(self, image, word_map, rev_word_map, max_len=20, device=None):
         """
         실제 사용(Inference)을 위한 함수 (이미지 1장 -> 문장)
         """
         self.eval()
         with torch.no_grad():
+            if device is not None:
+                image = image.to(device)
             # 1. 인코더 통과
             features = self.encoder(image) # [1, 576, 7, 7]
             
