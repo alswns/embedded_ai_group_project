@@ -93,9 +93,8 @@ def preprocess_image_optimized(frame):
     
     # ★ 핵심: GPU 모드일 경우 Half Precision(FP16) 적용
     if dtypes == torch.float16:
-        return image_tensor.half() 
-    else:
-        return image_tensor.float()
+        return image_tensor.half()
+    return image_tensor.float()
 
 preprocess_image = preprocess_image_optimized
 
@@ -517,6 +516,7 @@ def apply_quantization(model, quant_choice, model_name):
     if quant_choice == '1':
         # FP32 - 양자화 없음
         print("\n✅ FP32 (양자화 없음)")
+        global dtypes
         dtypes = torch.float32
         model = model.to(device)
         model.eval()
