@@ -87,7 +87,7 @@ def preprocess_image_optimized(frame):
     tensor = torch.from_numpy(img).unsqueeze(0).to(device)
     
     # 5. Half Precision (FP16) 적용 - Jetson Nano 성능의 핵심
-    return tensor.half() if device.type == 'cuda' else tensor
+    return tensor
 
 preprocess_image = preprocess_image_optimized
 
